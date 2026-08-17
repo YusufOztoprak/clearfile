@@ -1,4 +1,3 @@
-cat > README.md << 'EOF'
 # ClearFile
 
 AI-powered invoice compliance agent — extracts, verifies with human review, and digitally signs documents into audit-ready e-invoices using Nutrient DWS.
