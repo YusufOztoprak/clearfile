@@ -1,44 +1,62 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
-import { ArrowUpToLine, CheckCircle2, FileText, ShieldCheck, XCircle } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowUpToLine, CheckCircle2, FileText, Loader2, ShieldCheck, XCircle } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED_TYPES = ["application/pdf", "image/png", "image/jpeg"];
 const MAX_SIZE_MB = 15;
+const POLL_INTERVAL_MS = 3000;
 
-type UploadStatus = "uploading" | "processed" | "needs-review" | "error";
+// Mirrors backend/app/models/document.py -> Document.status
+type DocumentStatus = "pending" | "processing" | "needs_review" | "signed";
+type UploadStatus = "uploading" | DocumentStatus | "error";
 
 type UploadItem = {
-  id: string;
+  id: string; // local, stable key for the list (not the backend id)
+  documentId?: string; // uuid returned by POST /documents/upload
   file: File;
   progress: number;
   status: UploadStatus;
   errorMessage?: string;
 };
 
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 const STATUS_LABEL: Record<UploadStatus, string> = {
   uploading: "Uploading…",
-  processed: "Processed",
-  "needs-review": "Needs review",
+  pending: "Pending",
+  processing: "Processing",
+  needs_review: "Needs review",
+  signed: "Signed",
   error: "Failed",
 };
 
-// Status badges reuse the shadcn theme tokens (primary/accent/destructive/muted)
-// instead of arbitrary Tailwind colors, so they follow whatever palette is set in globals.css.
+// Status styling reuses the shadcn theme tokens (primary/accent/destructive/muted)
+// instead of arbitrary Tailwind colors, so it follows whatever palette is set in globals.css.
 const STATUS_BADGE: Record<UploadStatus, string> = {
   uploading: "border-border bg-muted text-muted-foreground",
-  processed: "border-primary/20 bg-primary/10 text-primary",
-  "needs-review": "border-accent bg-accent text-accent-foreground",
+  pending: "border-border bg-muted text-muted-foreground",
+  processing: "border-accent bg-accent text-accent-foreground",
+  needs_review: "border-accent bg-accent text-accent-foreground",
+  signed: "border-primary/20 bg-primary/10 text-primary",
   error: "border-destructive/30 bg-destructive/10 text-destructive",
 };
 
 const STATUS_ICON_WRAP: Record<UploadStatus, string> = {
   uploading: "bg-muted text-muted-foreground",
-  processed: "bg-primary/10 text-primary",
-  "needs-review": "bg-accent text-accent-foreground",
+  pending: "bg-muted text-muted-foreground",
+  processing: "bg-accent text-accent-foreground",
+  needs_review: "bg-accent text-accent-foreground",
+  signed: "bg-primary/10 text-primary",
   error: "bg-destructive/10 text-destructive",
 };
+
+// Statuses that mean "the backend is still going to change this on its own" — keep polling.
+const POLLABLE: DocumentStatus[] = ["pending", "processing"];
 
 function validateFile(file: File): string | null {
   if (!ACCEPTED_TYPES.includes(file.type)) {
@@ -54,10 +72,41 @@ export default function UploadPage() {
   const [items, setItems] = useState<UploadItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const pollTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const updateItem = (id: string, patch: Partial<UploadItem>) => {
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
   };
+
+  const pollStatus = useCallback((id: string, documentId: string) => {
+    const tick = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/documents/${documentId}`);
+        if (!res.ok) throw new Error(String(res.status));
+        const data = await res.json();
+        const status = data.status as DocumentStatus;
+
+        updateItem(id, { status });
+
+        if (POLLABLE.includes(status)) {
+          pollTimers.current[id] = setTimeout(tick, POLL_INTERVAL_MS);
+        }
+      } catch {
+        // A transient polling failure shouldn't flip the item to "error" —
+        // the upload itself already succeeded. Just retry on the next interval.
+        pollTimers.current[id] = setTimeout(tick, POLL_INTERVAL_MS);
+      }
+    };
+
+    pollTimers.current[id] = setTimeout(tick, POLL_INTERVAL_MS);
+  }, []);
+
+  useEffect(() => {
+    const timers = pollTimers.current;
+    return () => {
+      Object.values(timers).forEach(clearTimeout);
+    };
+  }, []);
 
   const uploadFile = (item: UploadItem) => {
     const formData = new FormData();
@@ -74,7 +123,17 @@ export default function UploadPage() {
 
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        updateItem(item.id, { progress: 100, status: "needs-review" });
+        try {
+          const data = JSON.parse(xhr.responseText);
+          updateItem(item.id, {
+            progress: 100,
+            status: (data.status as DocumentStatus) ?? "pending",
+            documentId: data.id,
+          });
+          if (data.id) pollStatus(item.id, data.id);
+        } catch {
+          updateItem(item.id, { progress: 100, status: "pending" });
+        }
       } else {
         updateItem(item.id, { status: "error", errorMessage: `Server responded ${xhr.status}` });
       }
@@ -109,6 +168,7 @@ export default function UploadPage() {
 
       if (!error) uploadFile(item);
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const onDrop = (event: React.DragEvent<HTMLDivElement>) => {
@@ -119,11 +179,16 @@ export default function UploadPage() {
 
   const retry = (item: UploadItem) => {
     const error = validateFile(item.file);
-    updateItem(item.id, { status: error ? "error" : "uploading", progress: 0, errorMessage: error ?? undefined });
+    updateItem(item.id, {
+      status: error ? "error" : "uploading",
+      progress: 0,
+      errorMessage: error ?? undefined,
+      documentId: undefined,
+    });
     if (!error) uploadFile(item);
   };
 
-  const activeCount = items.filter((it) => it.status === "uploading").length;
+  const activeCount = items.filter((it) => it.status === "uploading" || POLLABLE.includes(it.status as DocumentStatus)).length;
 
   return (
     <div className="space-y-8 py-4">
@@ -175,7 +240,7 @@ export default function UploadPage() {
           </p>
 
           <div className="mt-6 flex flex-wrap items-center justify-center gap-3 text-sm text-muted-foreground">
-            {["PDF", "PNG", "JPG"].map((type) => (
+            {["PDF", "PNG", "JPG", "Validated intake"].map((type) => (
               <span key={type} className="rounded-md border border-border bg-card px-3 py-1.5">
                 {type}
               </span>
@@ -209,22 +274,30 @@ export default function UploadPage() {
             {items.map((item) => (
               <div key={item.id} className="rounded-md border border-border bg-muted p-3">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3 text-sm font-medium">
+                  <div className="flex min-w-0 items-center gap-3 text-sm font-medium">
                     <span
-                      className={`flex h-6 w-6 items-center justify-center rounded-full ${STATUS_ICON_WRAP[item.status]}`}
+                      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${STATUS_ICON_WRAP[item.status]}`}
                     >
                       {item.status === "error" ? (
                         <XCircle className="h-4 w-4" />
+                      ) : item.status === "pending" || item.status === "processing" ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
                       ) : (
                         <CheckCircle2 className="h-4 w-4" />
                       )}
                     </span>
                     <span className="truncate">{item.file.name}</span>
                   </div>
-                  <span className="text-xs text-muted-foreground">
+                  <span className="shrink-0 text-xs text-muted-foreground">
                     {item.status === "uploading" ? `${item.progress}%` : STATUS_LABEL[item.status]}
                   </span>
                 </div>
+
+                {item.documentId && (
+                  <p className="mt-1.5 truncate pl-9 font-mono text-[11px] text-muted-foreground">
+                    {formatFileSize(item.file.size)}
+                  </p>
+                )}
 
                 {item.status === "uploading" && (
                   <div className="mt-2 h-1.5 w-full rounded-full bg-border">
@@ -258,23 +331,23 @@ export default function UploadPage() {
 
             {items.slice(0, 5).map((item) => (
               <div key={item.id} className="flex items-center justify-between rounded-md border border-border bg-muted p-3">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-card text-foreground">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-card text-foreground">
                     <FileText className="h-4 w-4" />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <p className="max-w-[160px] truncate text-sm font-semibold">{item.file.name}</p>
-                    <p className="text-xs text-muted-foreground">{(item.file.size / 1024).toFixed(0)} KB</p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {formatFileSize(item.file.size)}
+                    </p>
                   </div>
                 </div>
-                <span className={`rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${STATUS_BADGE[item.status]}`}>
+                <span className={`shrink-0 rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${STATUS_BADGE[item.status]}`}>
                   {STATUS_LABEL[item.status]}
                 </span>
               </div>
             ))}
           </div>
-
-          
         </aside>
       </div>
     </div>
