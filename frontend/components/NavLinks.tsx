@@ -3,6 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+export const navLinks = [
+  { href: "/dashboard", label: "Dashboard" },
+  { href: "/review", label: "Review" },
+  { href: "/archive", label: "Archive" },
+];
+
 function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
   const pathname = usePathname();
   const isActive = pathname === href;
@@ -10,25 +16,24 @@ function NavLink({ href, children }: { href: string; children: React.ReactNode }
   return (
     <Link
       href={href}
-      className={
-        isActive
-          ? "rounded-full bg-white/10 px-3 py-1.5 text-sm font-semibold text-white ring-1 ring-white/10"
-          : "rounded-full px-3 py-1.5 text-sm font-medium text-slate-300 transition hover:bg-white/5 hover:text-white"
-      }
+      className={`relative py-1 text-sm font-medium transition-colors ${
+        isActive ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+      }`}
     >
       {children}
+      {isActive && <span className="absolute -bottom-[15px] left-0 h-0.5 w-full bg-primary" />}
     </Link>
   );
 }
 
 export default function NavLinks() {
   return (
-    <div className="flex items-center gap-2 text-sm font-medium">
-      <NavLink href="/">Home</NavLink>
-      <NavLink href="/upload">Upload</NavLink>
-      <NavLink href="/dashboard">Dashboard</NavLink>
-      <NavLink href="/review">Review</NavLink>
-      <NavLink href="/archive">Archive</NavLink>
-    </div>
+    <nav className="flex items-center gap-7">
+      {navLinks.map((link) => (
+        <NavLink key={link.href} href={link.href}>
+          {link.label}
+        </NavLink>
+      ))}
+    </nav>
   );
 }
