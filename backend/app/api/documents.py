@@ -3,7 +3,7 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
-
+from pydantic import BaseModel
 from app.core.database import get_db
 from app.models import Document, AuditLog
 
@@ -12,6 +12,8 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+class StatusUpdate(BaseModel):
+    status: str
 
 @router.post("/upload")
 def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -56,4 +58,21 @@ def get_document_status(document_id: uuid.UUID, db: Session = Depends(get_db)):
     doc = db.query(Document).filter(Document.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+    return {"id": str(doc.id), "status": doc.status}
+
+@router.patch("/{document_id}/status")
+def update_document_status(document_id: uuid.UUID, payload: StatusUpdate, db: Session = Depends(get_db)):
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    valid_statuses = {"pending", "processing", "needs_review", "signed"}
+    if payload.status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+
+    doc.status = payload.status
+    db.add(AuditLog(id=uuid.uuid4(), document_id=doc.id, action=f"status_changed_to_{payload.status}", actor="system"))
+    db.commit()
+    db.refresh(doc)
+
     return {"id": str(doc.id), "status": doc.status}
