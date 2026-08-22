@@ -4,16 +4,26 @@ from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+
 from app.core.database import get_db
-from app.models import Document, AuditLog
+from app.models import Document, AuditLog, ExtractedField
+from nutrient_dws import NutrientClient
+from app.core.config import settings
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+nutrient_client = NutrientClient(
+    api_key=settings.nutrient_processor_api_key,
+    extract_api_key=settings.nutrient_extraction_api_key,
+)
+
+
 class StatusUpdate(BaseModel):
     status: str
+
 
 @router.post("/upload")
 def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -60,6 +70,7 @@ def get_document_status(document_id: uuid.UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Document not found")
     return {"id": str(doc.id), "status": doc.status}
 
+
 @router.patch("/{document_id}/status")
 def update_document_status(document_id: uuid.UUID, payload: StatusUpdate, db: Session = Depends(get_db)):
     doc = db.query(Document).filter(Document.id == document_id).first()
@@ -76,3 +87,49 @@ def update_document_status(document_id: uuid.UUID, payload: StatusUpdate, db: Se
     db.refresh(doc)
 
     return {"id": str(doc.id), "status": doc.status}
+
+
+@router.post("/{document_id}/extract")
+async def extract_document(document_id: uuid.UUID, db: Session = Depends(get_db)):
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_path = next(UPLOAD_DIR.glob(f"{document_id}_*"), None)
+    if not file_path:
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    try:
+        response = await nutrient_client.extract_key_value_pairs(str(file_path))
+    except Exception as e:
+        doc.status = "extraction_failed"
+        db.add(AuditLog(id=uuid.uuid4(), document_id=doc.id, action="extraction_failed", actor="system"))
+        db.commit()
+        raise HTTPException(status_code=502, detail=f"Extraction failed: {str(e)}")
+
+    pairs = response.get("data", {}).get("pages", [{}])[0].get("keyValuePairs", [])
+
+    saved_fields = []
+    for pair in pairs:
+        field_name = pair.get("key", {}).get("content", "").strip()
+        value = pair.get("value", {}).get("content", "").strip()
+        confidence = pair.get("confidence", 0) / 100
+
+        if not field_name:
+            continue
+
+        field = ExtractedField(
+            id=uuid.uuid4(),
+            document_id=doc.id,
+            field_name=field_name,
+            value=value,
+            confidence_score=confidence,
+        )
+        db.add(field)
+        saved_fields.append({"field_name": field_name, "value": value, "confidence_score": confidence})
+
+    doc.status = "needs_review"
+    db.add(AuditLog(id=uuid.uuid4(), document_id=doc.id, action="extracted", actor="system"))
+    db.commit()
+
+    return {"id": str(doc.id), "status": doc.status, "extracted_fields": saved_fields}
