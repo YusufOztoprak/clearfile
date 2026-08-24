@@ -4,11 +4,34 @@ from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+from openai import AsyncOpenAI
 
 from app.core.database import get_db
 from app.models import Document, AuditLog, ExtractedField
 from nutrient_dws import NutrientClient
 from app.core.config import settings
+
+openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+
+
+async def generate_review_note(field_name: str, value: str, confidence: float) -> str:
+    prompt = (
+        f"An invoice field was extracted with low confidence.\n"
+        f"Field: {field_name}\nExtracted value: {value}\nConfidence: {confidence:.0%}\n\n"
+        f"In one short sentence, explain to a human reviewer what to double-check about this field."
+    )
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-5.4-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_completion_tokens=60,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"OpenAI call failed: {e}")
+        return "Low confidence extraction — please verify this value manually."
+
+
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -60,8 +83,26 @@ def get_document(document_id: uuid.UUID, db: Session = Depends(get_db)):
     doc = db.query(Document).filter(Document.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    return {"id": str(doc.id), "filename": doc.filename, "status": doc.status, "uploaded_at": doc.uploaded_at}
 
+    fields = db.query(ExtractedField).filter(ExtractedField.document_id == doc.id).all()
+
+    return {
+        "id": str(doc.id),
+        "filename": doc.filename,
+        "status": doc.status,
+        "uploaded_at": doc.uploaded_at,
+        "extracted_fields": [
+            {
+                "id": str(f.id),
+                "field_name": f.field_name,
+                "value": f.value,
+                "confidence_score": f.confidence_score,
+                "approved": f.approved,
+                "review_note": f.review_note,
+            }
+            for f in fields
+        ],
+    }
 
 @router.get("/{document_id}/status")
 def get_document_status(document_id: uuid.UUID, db: Session = Depends(get_db)):
@@ -118,15 +159,28 @@ async def extract_document(document_id: uuid.UUID, db: Session = Depends(get_db)
         if not field_name:
             continue
 
+        needs_review = confidence < settings.confidence_threshold
+        note = None
+        if needs_review:
+            note = await generate_review_note(field_name, value, confidence)
+
         field = ExtractedField(
             id=uuid.uuid4(),
             document_id=doc.id,
             field_name=field_name,
             value=value,
             confidence_score=confidence,
+            approved=not needs_review,
+            review_note=note,
         )
         db.add(field)
-        saved_fields.append({"field_name": field_name, "value": value, "confidence_score": confidence})
+        saved_fields.append({
+            "field_name": field_name,
+            "value": value,
+            "confidence_score": confidence,
+            "needs_review": needs_review,
+            "review_note": note,
+        })
 
     doc.status = "needs_review"
     db.add(AuditLog(id=uuid.uuid4(), document_id=doc.id, action="extracted", actor="system"))

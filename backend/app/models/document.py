@@ -30,6 +30,7 @@ class ExtractedField(Base):
     value: Mapped[str] = mapped_column(Text, nullable=True)
     confidence_score: Mapped[float] = mapped_column(Float, nullable=True)
     approved: Mapped[bool] = mapped_column(default=False)
+    review_note: Mapped[str] = mapped_column(Text, nullable=True)
 
     document: Mapped["Document"] = relationship(back_populates="extracted_fields")
 
