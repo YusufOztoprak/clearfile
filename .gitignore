@@ -21,3 +21,5 @@ uploads/
 
 test_extraction.py
 test-invoice.png
+
+signed/
