@@ -1,120 +1,210 @@
-import { Archive, Clock3, Search, ShieldCheck } from "lucide-react";
+"use client";
 
-const archivedDocs = [
-  { name: "Supplier invoice", owner: "Finance", status: "Approved", date: "14 May" },
-  { name: "Vendor statement", owner: "Operations", status: "Reviewed", date: "11 May" },
-  { name: "Corporate expense", owner: "Accounting", status: "Archived", date: "7 May" },
-  { name: "Purchase order", owner: "Procurement", status: "Pending review", date: "3 May" },
-];
+import { useEffect, useMemo, useState } from "react";
+import { Archive, Download, FileText, Loader2, Search, ShieldCheck } from "lucide-react";
 
-const activity = [
-  "Invoice approved and attached to the archive.",
-  "Review note added by finance manager.",
-  "Payment file exported to internal storage.",
-];
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+// Mirrors backend/app/models/document.py -> Document.status
+type DocumentStatus = "pending" | "processing" | "needs_review" | "signed";
+
+type ApiDocument = {
+  id: string;
+  filename: string;
+  status: DocumentStatus;
+  uploaded_at: string;
+};
+
+function formatDate(iso: string) {
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
 
 export default function ArchivePage() {
+  const [documents, setDocuments] = useState<ApiDocument[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const res = await fetch(`${API_BASE}/documents`);
+        if (!res.ok) throw new Error(String(res.status));
+        const data: ApiDocument[] = await res.json();
+        if (!cancelled) {
+          setDocuments(data);
+          setError(null);
+        }
+      } catch {
+        if (!cancelled) setError("Could not reach the backend. Is it running?");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    load();
+    const interval = setInterval(load, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const signedDocuments = useMemo(() => documents.filter((d) => d.status === "signed"), [documents]);
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) return signedDocuments;
+    const q = query.toLowerCase();
+    return signedDocuments.filter((doc) => doc.filename.toLowerCase().includes(q));
+  }, [signedDocuments, query]);
+
   return (
     <div className="space-y-8 py-4">
-      <section className="border border-slate-200 bg-white p-5 sm:p-6">
+      <section className="rounded-lg border border-border bg-card p-5 text-card-foreground sm:p-6">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Archive</p>
-            <h1 className="mt-3 text-3xl font-bold tracking-[-0.05em] text-slate-900 sm:text-4xl">
-              Document history and approvals
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Archive</p>
+            <h1 className="mt-3 text-3xl font-bold tracking-[-0.05em] sm:text-4xl">
+              Signed documents
             </h1>
+            <p className="mt-2 text-muted-foreground">
+              Every document that completed the full review and signing cycle ends up here.
+            </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <button className="inline-flex items-center gap-2 border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100">
-              <Search className="h-4 w-4" />
-              Search archive
-            </button>
-            <button className="inline-flex items-center gap-2 border border-slate-900 bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
-              <Archive className="h-4 w-4" />
-              Export report
-            </button>
+          <div className="flex items-center gap-2 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
+            <Search className="h-4 w-4" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search by filename"
+              className="w-48 bg-transparent outline-none placeholder:text-muted-foreground"
+            />
           </div>
+        </div>
+
+        {error && (
+          <p className="mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </p>
+        )}
+      </section>
+
+      <section className="grid gap-5 md:grid-cols-2">
+        <div className="rounded-lg border border-border bg-card p-5">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-muted-foreground">Signed documents</span>
+            <span className="rounded-md border border-primary/20 bg-primary/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
+              Archived
+            </span>
+          </div>
+          <div className="mt-5 text-3xl font-bold tracking-[-0.05em]">{signedDocuments.length}</div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-card p-5">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-muted-foreground">Total tracked</span>
+            <span className="rounded-md border border-border bg-muted px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              All statuses
+            </span>
+          </div>
+          <div className="mt-5 text-3xl font-bold tracking-[-0.05em]">{documents.length}</div>
         </div>
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-        <div className="border border-slate-200 bg-white p-5 sm:p-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-semibold text-slate-900">Recent documents</h2>
-            <span className="border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-700">
-              Current
-            </span>
-          </div>
-
-          <div className="mt-6 overflow-hidden border border-slate-200">
-            <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-              <thead className="bg-slate-50 text-slate-600">
-                <tr>
-                  <th className="px-4 py-3 font-medium">Document</th>
-                  <th className="px-4 py-3 font-medium">Owner</th>
-                  <th className="px-4 py-3 font-medium">Date</th>
-                  <th className="px-4 py-3 font-medium">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200 bg-white text-slate-700">
-                {archivedDocs.map((doc) => (
-                  <tr key={doc.name} className="hover:bg-slate-50">
-                    <td className="px-4 py-3 font-semibold text-slate-900">{doc.name}</td>
-                    <td className="px-4 py-3 text-slate-600">{doc.owner}</td>
-                    <td className="px-4 py-3 text-slate-600">{doc.date}</td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${
-                          doc.status === "Approved" || doc.status === "Reviewed"
-                            ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
-                            : doc.status === "Pending review"
-                              ? "border border-amber-200 bg-amber-50 text-amber-700"
-                              : "border border-cyan-200 bg-cyan-50 text-cyan-700"
-                        }`}
-                      >
-                        {doc.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+      <section className="rounded-lg border border-border bg-card p-5 text-card-foreground sm:p-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold">Completed documents</h2>
         </div>
 
-        <aside className="space-y-6">
-          <div className="border border-slate-200 bg-white p-5 sm:p-6">
-            <div className="flex items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center border border-slate-200 bg-slate-50 text-slate-700">
-                <ShieldCheck className="h-5 w-5" />
-              </div>
-              <div>
-                <p className="text-sm text-slate-500">Compliance</p>
-                <p className="text-xl font-semibold text-slate-900">Audit ready</p>
-              </div>
-            </div>
-          </div>
+        <div className="mt-6 overflow-hidden rounded-md border border-border">
+          <table className="min-w-full divide-y divide-border text-left text-sm">
+            <thead className="bg-muted text-muted-foreground">
+              <tr>
+                <th className="px-4 py-3 font-medium">Document</th>
+                <th className="px-4 py-3 font-medium">Uploaded</th>
+                <th className="px-4 py-3 font-medium">Status</th>
+                <th className="px-4 py-3 font-medium text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border bg-card">
+              {loading && (
+                <tr>
+                  <td colSpan={4} className="px-4 py-6 text-center text-muted-foreground">
+                    <Loader2 className="mx-auto h-4 w-4 animate-spin" />
+                  </td>
+                </tr>
+              )}
 
-          <div className="border border-slate-200 bg-white p-5 sm:p-6">
-            <div className="flex items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center border border-slate-200 bg-slate-50 text-slate-700">
-                <Clock3 className="h-5 w-5" />
-              </div>
-              <div>
-                <p className="text-sm text-slate-500">Recent activity</p>
-                <p className="text-xl font-semibold text-slate-900">Updated today</p>
-              </div>
-            </div>
-            <ul className="mt-5 space-y-3 text-sm text-slate-700">
-              {activity.map((item) => (
-                <li key={item} className="border border-slate-200 bg-slate-50 p-3">
-                  {item}
-                </li>
+              {!loading && filtered.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="px-4 py-10 text-center">
+                    <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                      <Archive className="h-6 w-6" />
+                      <p className="text-sm">
+                        {signedDocuments.length === 0
+                          ? "Nothing signed yet. Documents land here once their status is set to \"signed\"."
+                          : "No signed documents match this search."}
+                      </p>
+                    </div>
+                  </td>
+                </tr>
+              )}
+
+              {filtered.map((doc) => (
+                <tr key={doc.id} className="hover:bg-muted/50">
+                  <td className="px-4 py-3 font-semibold">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-muted">
+                        <FileText className="h-4 w-4" />
+                      </div>
+                      <span className="line-clamp-1">{doc.filename}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">{formatDate(doc.uploaded_at)}</td>
+                  <td className="px-4 py-3">
+                    <span className="rounded-md border border-primary/20 bg-primary/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
+                      Signed
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <a
+                      href={`${API_BASE}/documents/${doc.id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted/70"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      View
+                    </a>
+                  </td>
+                </tr>
               ))}
-            </ul>
-          </div>
-        </aside>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-4 flex items-start gap-2 text-xs text-muted-foreground">
+          <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <p>
+            There isn&apos;t a dedicated signing endpoint yet (planned for the extraction/signing milestone) — a
+            document only reaches &quot;signed&quot; once its status is updated via <code>PATCH /documents/&#123;id&#125;/status</code>.
+            The &quot;View&quot; action opens the raw API response for now; it will point to the actual signed
+            file and its audit trail once that part of the backend exists.
+          </p>
+        </div>
       </section>
     </div>
   );

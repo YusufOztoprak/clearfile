@@ -109,9 +109,6 @@ export default function HomePage() {
       <section className="rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-6 lg:p-8">
         <div className="grid items-center gap-8 lg:grid-cols-12">
           <div className="lg:col-span-7">
-            <div className="inline-flex items-center gap-2 rounded-full border border-border bg-secondary px-3 py-1.5 text-xs font-medium uppercase tracking-wide text-secondary-foreground">
-              Finance operations
-            </div>
 
             <h1 className="mt-6 max-w-xl text-4xl font-bold tracking-tight text-foreground sm:text-5xl">
               ClearFile keeps supplier documents moving without friction.
