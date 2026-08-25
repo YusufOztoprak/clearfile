@@ -1,19 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Select } from "@base-ui/react/select";
-
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Check,
   ChevronDown,
   FileText,
   Loader2,
+  PenLine,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
-  ThumbsDown,
-  ThumbsUp,
 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -87,9 +84,6 @@ function looksNoisy(value: string): boolean {
   return suspiciousPunctuation >= 2 || hasMixedAlnumRun || looksLikeTwoClauses;
 }
 
-// Same idea as the upload page's "active vs history" split: rather than one
-// flat list of every document (which just duplicates the dashboard), the
-// selector is grouped by whether it actually needs a human decision here.
 function DocumentButton({
   doc,
   selected,
@@ -119,6 +113,56 @@ function DocumentButton({
   );
 }
 
+// Same custom dropdown pattern used for the dashboard's status filter:
+// a plain button + an absolutely positioned popup, closed on outside click.
+// Replaces the native <select> so the popup's font/colors follow the
+// site's theme instead of the browser/OS default.
+function SortDropdown({ value, onChange }: { value: SortMode; onChange: (v: SortMode) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const current = SORT_OPTIONS.find((o) => o.value === value) ?? SORT_OPTIONS[0];
+
+  useEffect(() => {
+    function onClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative flex items-center gap-2 text-xs text-muted-foreground">
+      Sort:
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:bg-muted/70"
+      >
+        {current.label}
+        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-full z-10 mt-2 w-52 rounded-md border border-border bg-card p-1 font-sans shadow-md">
+          {SORT_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => {
+                onChange(opt.value);
+                setOpen(false);
+              }}
+              className={`block w-full rounded-sm px-3 py-2 text-left text-sm transition ${
+                value === opt.value ? "bg-primary/10 text-primary" : "text-foreground hover:bg-muted"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ReviewPage() {
   const [documents, setDocuments] = useState<ApiDocument[]>([]);
   const [loadingList, setLoadingList] = useState(true);
@@ -132,10 +176,11 @@ export default function ReviewPage() {
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [sortMode, setSortMode] = useState<SortMode>("original");
 
-  // Local-only overrides: the backend has no endpoint yet to persist
-  // approve/reject decisions on individual fields, so this stays client-side
-  // until Yusuf ships PATCH /documents/{id}/fields/{field_id}.
-  const [decisions, setDecisions] = useState<Record<string, "approved" | "rejected">>({});
+  const [savingFieldId, setSavingFieldId] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const [signing, setSigning] = useState(false);
+  const [signError, setSignError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -171,7 +216,7 @@ export default function ReviewPage() {
     let cancelled = false;
     setLoadingDetail(true);
     setDetailError(null);
-    setDecisions({});
+    setSignError(null);
 
     fetch(`${API_BASE}/documents/${selectedId}`)
       .then((res) => {
@@ -199,6 +244,7 @@ export default function ReviewPage() {
   const fields = detail?.extracted_fields ?? [];
   const lowConfidenceCount = useMemo(() => fields.filter((f) => !f.approved).length, [fields]);
   const noisyCount = useMemo(() => fields.filter((f) => looksNoisy(f.value)).length, [fields]);
+  const allApproved = fields.length > 0 && fields.every((f) => f.approved);
 
   const visibleFields = useMemo(() => {
     let list = fields;
@@ -227,8 +273,62 @@ export default function ReviewPage() {
     return sorted;
   }, [fields, filterMode, sortMode]);
 
-  const decide = (fieldId: string, decision: "approved" | "rejected") => {
-    setDecisions((prev) => ({ ...prev, [fieldId]: decision }));
+  const toggleApproval = async (field: ExtractedField) => {
+    if (!selectedId) return;
+    const nextApproved = !field.approved;
+    setSavingFieldId(field.id);
+    setFieldErrors((prev) => {
+      const next = { ...prev };
+      delete next[field.id];
+      return next;
+    });
+
+    try {
+      const res = await fetch(`${API_BASE}/documents/${selectedId}/fields/${field.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approved: nextApproved }),
+      });
+      if (!res.ok) throw new Error(`Server responded ${res.status}`);
+
+      setDetail((prev) =>
+        prev
+          ? {
+              ...prev,
+              extracted_fields: prev.extracted_fields.map((f) =>
+                f.id === field.id ? { ...f, approved: nextApproved } : f
+              ),
+            }
+          : prev
+      );
+    } catch {
+      setFieldErrors((prev) => ({
+        ...prev,
+        [field.id]: "Couldn't save this decision. Check the backend and try again.",
+      }));
+    } finally {
+      setSavingFieldId(null);
+    }
+  };
+
+  const signDocument = async () => {
+    if (!selectedId) return;
+    setSigning(true);
+    setSignError(null);
+
+    try {
+      const res = await fetch(`${API_BASE}/documents/${selectedId}/sign`, { method: "POST" });
+      if (!res.ok) throw new Error(`Server responded ${res.status}`);
+      const data = await res.json();
+      setDetail((prev) => (prev ? { ...prev, status: (data.status as DocumentStatus) ?? "signed" } : prev));
+      setDocuments((prev) =>
+        prev.map((d) => (d.id === selectedId ? { ...d, status: (data.status as DocumentStatus) ?? "signed" } : d))
+      );
+    } catch {
+      setSignError("Signing failed. Check the backend and try again.");
+    } finally {
+      setSigning(false);
+    }
   };
 
   return (
@@ -349,37 +449,33 @@ export default function ReviewPage() {
                 </span>
               </div>
 
+              {fields.length > 0 && detail.status !== "signed" && (
+                <div className="mt-4 flex flex-col gap-3 rounded-md border border-border bg-muted p-3 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-xs text-muted-foreground">
+                    {allApproved
+                      ? "All fields approved — this document is ready to sign."
+                      : `${lowConfidenceCount} field${lowConfidenceCount === 1 ? "" : "s"} still need${lowConfidenceCount === 1 ? "s" : ""} approval before signing.`}
+                  </p>
+                  <button
+                    onClick={signDocument}
+                    disabled={!allApproved || signing}
+                    className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {signing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PenLine className="h-3.5 w-3.5" />}
+                    Sign document
+                  </button>
+                </div>
+              )}
+
+              {signError && (
+                <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {signError}
+                </p>
+              )}
+
               {fields.length > 0 && (
                 <div className="mt-5 flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
-                  
-
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                    Sort:
-                    <Select.Root value={sortMode} onValueChange={(v) => setSortMode(v as SortMode)}>
-                      <Select.Trigger className="flex items-center gap-2 rounded-md border border-border bg-muted px-2 py-1.5 text-xs font-sans text-foreground outline-none">
-                        <Select.Value />
-                        <Select.Icon>
-                          <ChevronDown className="h-3.5 w-3.5" />
-                        </Select.Icon>
-                      </Select.Trigger>
-
-                      <Select.Portal>
-                        <Select.Positioner sideOffset={4}>
-                          <Select.Popup className="rounded-md border border-border bg-card p-1 font-sans text-xs shadow-md">
-                            {SORT_OPTIONS.map((opt) => (
-                              <Select.Item
-                                key={opt.value}
-                                value={opt.value}
-                                className="cursor-pointer rounded-sm px-2 py-1.5 text-foreground outline-none hover:bg-muted data-[selected]:bg-primary/10 data-[selected]:text-primary"
-                              >
-                                <Select.ItemText>{opt.label}</Select.ItemText>
-                              </Select.Item>
-                            ))}
-                          </Select.Popup>
-                        </Select.Positioner>
-                      </Select.Portal>
-                    </Select.Root>  
-                  </label>
+                  <SortDropdown value={sortMode} onChange={setSortMode} />
 
                   <div className="flex flex-wrap gap-1.5">
                     {FILTER_OPTIONS.map((opt) => (
@@ -413,9 +509,10 @@ export default function ReviewPage() {
                 )}
 
                 {visibleFields.map((field) => {
-                  const decision = decisions[field.id];
                   const flagged = !field.approved;
                   const noisy = looksNoisy(field.value);
+                  const isSaving = savingFieldId === field.id;
+                  const saveError = fieldErrors[field.id];
 
                   return (
                     <div
@@ -467,41 +564,38 @@ export default function ReviewPage() {
                         </div>
                       )}
 
+                      {saveError && (
+                        <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                          {saveError}
+                        </p>
+                      )}
+
                       <div className="mt-3 flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          {decision === "approved" && (
-                            <span className="inline-flex items-center gap-1 text-xs font-medium text-primary">
+                        <span className="text-xs text-muted-foreground">
+                          {isSaving ? (
+                            <span className="inline-flex items-center gap-1">
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…
+                            </span>
+                          ) : field.approved ? (
+                            <span className="inline-flex items-center gap-1 text-primary">
                               <Check className="h-3.5 w-3.5" /> Approved
                             </span>
+                          ) : (
+                            "Awaiting your review"
                           )}
-                          {decision === "rejected" && (
-                            <span className="inline-flex items-center gap-1 text-xs font-medium text-destructive">
-                              <AlertTriangle className="h-3.5 w-3.5" /> Rejected
-                            </span>
-                          )}
-                          {!decision && (
-                            <span className="text-xs text-muted-foreground">
-                              {field.approved ? "Auto-approved" : "Awaiting your review"}
-                            </span>
-                          )}
-                        </div>
+                        </span>
 
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => decide(field.id, "approved")}
-                            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-semibold transition hover:border-primary/30 hover:bg-primary/10 hover:text-primary"
-                          >
-                            <ThumbsUp className="h-3.5 w-3.5" />
-                            Approve
-                          </button>
-                          <button
-                            onClick={() => decide(field.id, "rejected")}
-                            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-semibold transition hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
-                          >
-                            <ThumbsDown className="h-3.5 w-3.5" />
-                            Reject
-                          </button>
-                        </div>
+                        <button
+                          onClick={() => toggleApproval(field)}
+                          disabled={isSaving}
+                          className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                            field.approved
+                              ? "border-border bg-card hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
+                              : "border-border bg-card hover:border-primary/30 hover:bg-primary/10 hover:text-primary"
+                          }`}
+                        >
+                          {field.approved ? "Mark as rejected" : "Approve field"}
+                        </button>
                       </div>
                     </div>
                   );
@@ -512,8 +606,9 @@ export default function ReviewPage() {
                 <div className="mt-4 flex items-start gap-2 text-xs text-muted-foreground">
                   <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   <p>
-                    Approve/reject decisions aren&apos;t saved to the backend yet — there&apos;s no endpoint for it.
-                    This stays local until that&apos;s wired up.
+                    Decisions are saved to the backend via <code>PATCH /documents/&#123;id&#125;/fields/&#123;field_id&#125;</code> and
+                    logged to the audit trail. Signing checks approval status on this page only — the backend&apos;s{" "}
+                    <code>/sign</code> endpoint doesn&apos;t enforce it yet.
                   </p>
                 </div>
               )}

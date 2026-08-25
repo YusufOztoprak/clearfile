@@ -4,9 +4,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 export const navLinks = [
-  { href: "/dashboard", label: "Dashboard" },
   { href: "/review", label: "Review" },
   { href: "/archive", label: "Archive" },
+  { href: "/dashboard", label: "Dashboard" },
+  { href: "/audit", label: "Audit" },
 ];
 
 function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
