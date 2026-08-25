@@ -129,6 +129,40 @@ def update_document_status(document_id: uuid.UUID, payload: StatusUpdate, db: Se
 
     return {"id": str(doc.id), "status": doc.status}
 
+class FieldReviewUpdate(BaseModel):
+    approved: bool
+
+
+@router.patch("/{document_id}/fields/{field_id}")
+def update_field_review(
+    document_id: uuid.UUID,
+    field_id: uuid.UUID,
+    payload: FieldReviewUpdate,
+    db: Session = Depends(get_db),
+):
+    field = (
+        db.query(ExtractedField)
+        .filter(ExtractedField.id == field_id, ExtractedField.document_id == document_id)
+        .first()
+    )
+    if not field:
+        raise HTTPException(status_code=404, detail="Field not found")
+
+    field.approved = payload.approved
+    db.add(AuditLog(
+        id=uuid.uuid4(),
+        document_id=document_id,
+        action=f"field_{'approved' if payload.approved else 'rejected'}: {field.field_name}",
+        actor="reviewer",
+    ))
+    db.commit()
+    db.refresh(field)
+
+    return {
+        "id": str(field.id),
+        "field_name": field.field_name,
+        "approved": field.approved,
+    }
 
 @router.post("/{document_id}/extract")
 async def extract_document(document_id: uuid.UUID, db: Session = Depends(get_db)):
