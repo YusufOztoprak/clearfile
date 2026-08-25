@@ -111,6 +111,21 @@ def get_document_status(document_id: uuid.UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Document not found")
     return {"id": str(doc.id), "status": doc.status}
 
+@router.get("/{document_id}/audit")
+def get_document_audit(document_id: uuid.UUID, db: Session = Depends(get_db)):
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    logs = db.query(AuditLog).filter(AuditLog.document_id == doc.id).order_by(AuditLog.timestamp.asc()).all()
+
+    return {
+        "id": str(doc.id),
+        "audit_trail": [
+            {"action": log.action, "actor": log.actor, "timestamp": log.timestamp}
+            for log in logs
+        ],
+    }
 
 @router.patch("/{document_id}/status")
 def update_document_status(document_id: uuid.UUID, payload: StatusUpdate, db: Session = Depends(get_db)):
@@ -187,3 +202,77 @@ async def extract_document(document_id: uuid.UUID, db: Session = Depends(get_db)
     db.commit()
 
     return {"id": str(doc.id), "status": doc.status, "extracted_fields": saved_fields}
+
+
+SIGNED_DIR = Path("signed")
+SIGNED_DIR.mkdir(exist_ok=True)
+
+
+def build_invoice_html(doc: Document, fields: list[ExtractedField]) -> str:
+    rows = "".join(
+        f"<tr><td>{f.field_name}</td><td>{f.value}</td></tr>"
+        for f in fields if f.approved
+    )
+    return f"""
+    <html>
+      <body>
+        <h1>Invoice — {doc.filename}</h1>
+        <p>Document ID: {doc.id}</p>
+        <table border="1" cellpadding="5">
+          <tr><th>Field</th><th>Value</th></tr>
+          {rows}
+        </table>
+      </body>
+    </html>
+    """
+
+
+@router.post("/{document_id}/sign")
+async def sign_document(document_id: uuid.UUID, db: Session = Depends(get_db)):
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    fields = db.query(ExtractedField).filter(ExtractedField.document_id == doc.id).all()
+    if not fields:
+        raise HTTPException(status_code=400, detail="No extracted fields to sign. Run extraction first.")
+
+    html_content = build_invoice_html(doc, fields)
+    html_path = UPLOAD_DIR / f"{document_id}_invoice.html"
+    with open(html_path, "w") as f:
+        f.write(html_content)
+
+    try:
+        convert_result = await (
+            nutrient_client.workflow()
+            .add_html_part(str(html_path))
+            .output_pdf()
+            .execute()
+        )
+        if not convert_result["success"]:
+            raise Exception(str(convert_result["errors"]))
+
+        pdf_bytes = convert_result["output"]["buffer"]
+        unsigned_pdf_path = SIGNED_DIR / f"{document_id}_unsigned.pdf"
+        with open(unsigned_pdf_path, "wb") as f:
+            f.write(pdf_bytes)
+
+        sign_result = await nutrient_client.sign(str(unsigned_pdf_path))
+        signed_bytes = sign_result["buffer"]
+
+        signed_path = SIGNED_DIR / f"{document_id}_signed.pdf"
+        with open(signed_path, "wb") as f:
+            f.write(signed_bytes)
+
+    except Exception as e:
+        doc.status = "signing_failed"
+        db.add(AuditLog(id=uuid.uuid4(), document_id=doc.id, action="signing_failed", actor="system"))
+        db.commit()
+        raise HTTPException(status_code=502, detail=f"Signing failed: {str(e)}")
+
+    doc.status = "signed"
+    doc.signed_file_path = str(signed_path)
+    db.add(AuditLog(id=uuid.uuid4(), document_id=doc.id, action="signed", actor="system"))
+    db.commit()
+
+    return {"id": str(doc.id), "status": doc.status, "signed_file_path": str(signed_path)}
