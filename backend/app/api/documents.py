@@ -118,7 +118,7 @@ def update_document_status(document_id: uuid.UUID, payload: StatusUpdate, db: Se
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    valid_statuses = {"pending", "processing", "needs_review", "signed"}
+    valid_statuses = {"pending", "processing", "needs_review", "signed", "rejected"}
     if payload.status not in valid_statuses:
         raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
 
