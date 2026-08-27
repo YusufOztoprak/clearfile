@@ -1,3 +1,4 @@
+import asyncio
 import shutil
 import uuid
 from pathlib import Path
@@ -46,15 +47,35 @@ nutrient_client = NutrientClient(
 
 class StatusUpdate(BaseModel):
     status: str
+    reason: str | None = None
+
+
+ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 @router.post("/upload")
 def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    ext = Path(file.filename).suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type. Allowed: {ALLOWED_EXTENSIONS}")
+
     doc_id = uuid.uuid4()
     file_path = UPLOAD_DIR / f"{doc_id}_{file.filename}"
 
+    size = 0
     with file_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        while chunk := file.file.read(1024 * 1024):
+            size += len(chunk)
+            if size > MAX_FILE_SIZE:
+                buffer.close()
+                file_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=400, detail="File too large (max 10MB)")
+            buffer.write(chunk)
+
+    if size == 0:
+        file_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
     doc = Document(id=doc_id, filename=file.filename, status="pending")
     db.add(doc)
@@ -133,11 +154,17 @@ def update_document_status(document_id: uuid.UUID, payload: StatusUpdate, db: Se
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    valid_statuses = {"pending", "processing", "needs_review", "signed"}
+    valid_statuses = {"pending", "processing", "needs_review", "signed", "rejected"}
     if payload.status not in valid_statuses:
         raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
 
     doc.status = payload.status
+
+    action = f"status_changed_to_{payload.status}"
+    if payload.reason:
+        action += f"_{payload.reason}"
+
+
     db.add(AuditLog(id=uuid.uuid4(), document_id=doc.id, action=f"status_changed_to_{payload.status}", actor="system"))
     db.commit()
     db.refresh(doc)
@@ -190,7 +217,15 @@ async def extract_document(document_id: uuid.UUID, db: Session = Depends(get_db)
         raise HTTPException(status_code=404, detail="File not found on disk")
 
     try:
-        response = await nutrient_client.extract_key_value_pairs(str(file_path))
+        response = await asyncio.wait_for(
+            nutrient_client.extract_key_value_pairs(str(file_path)),
+            timeout=60.0,
+        )
+    except asyncio.TimeoutError:
+        doc.status = "extraction_failed"
+        db.add(AuditLog(id=uuid.uuid4(), document_id=doc.id, action="extraction_timeout", actor="system"))
+        db.commit()
+        raise HTTPException(status_code=504, detail="Extraction timed out. Please try again.")
     except Exception as e:
         doc.status = "extraction_failed"
         db.add(AuditLog(id=uuid.uuid4(), document_id=doc.id, action="extraction_failed", actor="system"))
