@@ -6,12 +6,16 @@ import {
   Check,
   ChevronDown,
   FileText,
+  Inbox,
   Loader2,
   PenLine,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
+
+import { LoadingRow, ErrorRow, EmptyRow, LoadingState, ErrorState, 
+  EmptyState } from "@/components/TableStates";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -351,11 +355,7 @@ export default function ReviewPage() {
           </p>
         </div>
 
-        {listError && (
-          <p className="mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {listError}
-          </p>
-        )}
+        {listError && <ErrorState message={listError} />}
       </section>
 
       <div className="grid gap-6 lg:grid-cols-[0.9fr_1.4fr]">
@@ -369,15 +369,11 @@ export default function ReviewPage() {
             )}
           </div>
 
-          {loadingList && (
-            <div className="flex items-center justify-center p-6 text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-            </div>
-          )}
+          {loadingList && <LoadingState className="p-6" />}
 
           {!loadingList && documents.length === 0 && (
-            <p className="mt-4 text-sm text-muted-foreground">No documents uploaded yet.</p>
-          )}
+            <EmptyState icon={Inbox} message="No documents uploaded yet." />
+)}
 
           {!loadingList && needsReviewDocs.length > 0 && (
             <div className="mt-4">
@@ -423,7 +419,7 @@ export default function ReviewPage() {
 
           {selectedId && loadingDetail && (
             <div className="flex items-center justify-center p-10 text-muted-foreground">
-              <Loader2 className="h-5 w-5 animate-spin" />
+              <LoadingState className="p-4" />
             </div>
           )}
 

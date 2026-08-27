@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Archive, Download, FileText, Loader2, Search, ShieldCheck } from "lucide-react";
-
+import { Archive, Download, FileText, Search, ShieldCheck } from "lucide-react";
+import { LoadingRow, EmptyRow } from "@/components/TableStates";
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // Mirrors backend/app/models/document.py -> Document.status
@@ -140,27 +140,18 @@ export default function ArchivePage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border bg-card">
-              {loading && (
-                <tr>
-                  <td colSpan={4} className="px-4 py-6 text-center text-muted-foreground">
-                    <Loader2 className="mx-auto h-4 w-4 animate-spin" />
-                  </td>
-                </tr>
-              )}
+              {loading && <LoadingRow colSpan={4} />}
 
               {!loading && filtered.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="px-4 py-10 text-center">
-                    <div className="flex flex-col items-center gap-2 text-muted-foreground">
-                      <Archive className="h-6 w-6" />
-                      <p className="text-sm">
-                        {signedDocuments.length === 0
-                          ? "Nothing signed yet. Documents land here once their status is set to \"signed\"."
-                          : "No signed documents match this search."}
-                      </p>
-                    </div>
-                  </td>
-                </tr>
+                <EmptyRow
+                  colSpan={4}
+                  icon={Archive}
+                  message={
+                    signedDocuments.length === 0
+                      ? "Nothing signed yet. Documents land here once their status is set to \"signed\"."
+                      : "No signed documents match this search."
+                  }
+                />
               )}
 
               {filtered.map((doc) => (

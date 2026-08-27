@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ClipboardList, Loader2, Search, User } from "lucide-react";
+import { LoadingRow, ErrorRow, EmptyRow } from "@/components/TableStates";
+import { ChevronDown, ChevronRight, ClipboardList, Search, User } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -21,6 +22,13 @@ type AuditLogEntry = {
 type AuditEntryWithDoc = AuditLogEntry & {
   documentId: string;
   filename: string;
+};
+
+type DocumentGroup = {
+  documentId: string;
+  filename: string;
+  latest: AuditEntryWithDoc;
+  history: AuditEntryWithDoc[]; // sorted desc, includes latest at [0]
 };
 
 type ActorFilter = "all" | string;
@@ -138,6 +146,7 @@ export default function AuditPage() {
 
   const [query, setQuery] = useState("");
   const [actorFilter, setActorFilter] = useState<ActorFilter>("all");
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -155,8 +164,8 @@ export default function AuditPage() {
             try {
               const r = await fetch(`${API_BASE}/documents/${doc.id}/audit`);
               if (!r.ok) throw new Error(String(r.status));
-              const data: { logs: AuditLogEntry[] } = await r.json();
-              return data.logs.map((log) => ({ ...log, documentId: doc.id, filename: doc.filename }));
+              const data: { audit_trail: AuditLogEntry[] } = await r.json();
+              return data.audit_trail.map((log) => ({ ...log, documentId: doc.id, filename: doc.filename }));
             } catch {
               return [];
             }
@@ -203,6 +212,35 @@ export default function AuditPage() {
     return list;
   }, [entries, query, actorFilter]);
 
+  // Group the flat, already-sorted (desc) entries by document: one row per
+  // document showing its latest event, with the full per-document history
+  // available on click instead of one line per action for every document.
+  const groups = useMemo<DocumentGroup[]>(() => {
+    const byDoc = new Map<string, AuditEntryWithDoc[]>();
+    for (const entry of filtered) {
+      const list = byDoc.get(entry.documentId) ?? [];
+      list.push(entry);
+      byDoc.set(entry.documentId, list);
+    }
+    return Array.from(byDoc.values())
+      .map((history) => ({
+        documentId: history[0].documentId,
+        filename: history[0].filename,
+        latest: history[0],
+        history,
+      }))
+      .sort((a, b) => new Date(b.latest.timestamp).getTime() - new Date(a.latest.timestamp).getTime());
+  }, [filtered]);
+
+  function toggleExpanded(documentId: string) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(documentId)) next.delete(documentId);
+      else next.add(documentId);
+      return next;
+    });
+  }
+
   return (
     <div className="space-y-8 py-4">
       <section className="rounded-lg border border-border bg-card p-5 text-card-foreground sm:p-6">
@@ -228,7 +266,12 @@ export default function AuditPage() {
             <div className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-muted">
               <ClipboardList className="h-4 w-4" />
             </div>
-            <h2 className="text-lg font-semibold">{filtered.length} entries</h2>
+            <h2 className="text-lg font-semibold">
+              {groups.length} document{groups.length === 1 ? "" : "s"}
+              <span className="ml-2 text-sm font-normal text-muted-foreground">
+                ({filtered.length} event{filtered.length === 1 ? "" : "s"} total)
+              </span>
+            </h2>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -250,55 +293,99 @@ export default function AuditPage() {
           <table className="min-w-full divide-y divide-border text-left text-sm">
             <thead className="bg-muted text-muted-foreground">
               <tr>
-                <th className="px-4 py-3 font-medium">When</th>
                 <th className="px-4 py-3 font-medium">Document</th>
-                <th className="px-4 py-3 font-medium">What</th>
+                <th className="px-4 py-3 font-medium">When</th>
+                <th className="px-4 py-3 font-medium">Latest action</th>
                 <th className="px-4 py-3 font-medium">Who</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border bg-card">
-              {loading && (
-                <tr>
-                  <td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">
-                    <Loader2 className="mx-auto h-4 w-4 animate-spin" />
-                  </td>
-                </tr>
-              )}
+              {loading && <LoadingRow colSpan={4} />}
 
-              {!loading && filtered.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">
-                    {entries.length === 0
+              {!loading && error && <ErrorRow colSpan={4} message="Couldn't load audit entries." />}
+
+              {!loading && !error && groups.length === 0 && (
+                <EmptyRow
+                  colSpan={4}
+                  icon={ClipboardList}
+                  message={
+                    entries.length === 0
                       ? "No audit activity yet. Actions will appear here as documents move through the pipeline."
-                      : "No entries match this search or filter."}
-                  </td>
-                </tr>
+                      : "No entries match this search or filter."
+                  }
+                />
               )}
 
-              {filtered.map((entry, idx) => (
-                <tr key={`${entry.documentId}-${entry.timestamp}-${idx}`} className="hover:bg-muted/50">
-                  <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                    {formatTimestamp(entry.timestamp)}
-                  </td>
-                  <td className="px-4 py-3 font-medium">
-                    <span className="line-clamp-1 max-w-[220px]">{entry.filename}</span>
-                  </td>
-                  <td className="px-4 py-3">{formatAction(entry.action)}</td>
-                  <td className="px-4 py-3">
-                    <span className="inline-flex items-center gap-1.5 capitalize text-muted-foreground">
-                      <User className="h-3.5 w-3.5" />
-                      {entry.actor}
-                    </span>
-                  </td>
-                </tr>
-              ))}
+              {!loading &&
+                !error &&
+                groups.map((group) => {
+                  const isExpanded = expandedIds.has(group.documentId);
+                  const olderEvents = group.history.slice(1);
+
+                  return (
+                    <>
+                      <tr
+                        key={group.documentId}
+                        onClick={() => toggleExpanded(group.documentId)}
+                        className="cursor-pointer hover:bg-muted/50"
+                      >
+                        <td className="px-4 py-3 font-medium">
+                          <span className="flex items-center gap-2">
+                            {olderEvents.length > 0 ? (
+                              isExpanded ? (
+                                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              ) : (
+                                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              )
+                            ) : (
+                              <span className="w-3.5 shrink-0" />
+                            )}
+                            <span className="line-clamp-1 max-w-[220px]">{group.filename}</span>
+                            {olderEvents.length > 0 && (
+                              <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                                {group.history.length}
+                              </span>
+                            )}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                          {formatTimestamp(group.latest.timestamp)}
+                        </td>
+                        <td className="px-4 py-3">{formatAction(group.latest.action)}</td>
+                        <td className="px-4 py-3">
+                          <span className="inline-flex items-center gap-1.5 capitalize text-muted-foreground">
+                            <User className="h-3.5 w-3.5" />
+                            {group.latest.actor}
+                          </span>
+                        </td>
+                      </tr>
+
+                      {isExpanded &&
+                        olderEvents.map((entry, idx) => (
+                          <tr key={`${group.documentId}-${entry.timestamp}-${idx}`} className="bg-muted/30">
+                            <td className="px-4 py-2 pl-10 text-xs text-muted-foreground">—</td>
+                            <td className="px-4 py-2 whitespace-nowrap text-xs text-muted-foreground">
+                              {formatTimestamp(entry.timestamp)}
+                            </td>
+                            <td className="px-4 py-2 text-xs text-muted-foreground">{formatAction(entry.action)}</td>
+                            <td className="px-4 py-2">
+                              <span className="inline-flex items-center gap-1.5 text-xs capitalize text-muted-foreground">
+                                <User className="h-3 w-3" />
+                                {entry.actor}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                    </>
+                  );
+                })}
             </tbody>
           </table>
         </div>
 
         <p className="mt-3 text-xs text-muted-foreground">
-          Entries are fetched per document via <code>GET /documents/&#123;id&#125;/audit</code> and merged
-          client-side — a global <code>GET /audit</code> endpoint would be more efficient at real scale.
+          Showing the latest action per document — click a row to expand its full history. Entries are fetched per
+          document via <code>GET /documents/&#123;id&#125;/audit</code> and merged client-side.
         </p>
       </section>
     </div>

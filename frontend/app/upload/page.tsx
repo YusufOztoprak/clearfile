@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowUpToLine, CheckCircle2, FileText, Loader2, ShieldCheck, XCircle } from "lucide-react";
-
+import { ArrowUpToLine, CheckCircle2, FileText, Inbox, Loader2, ShieldCheck, XCircle } from "lucide-react";
+import { EmptyState } from "@/components/TableStates";
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED_TYPES = ["application/pdf", "image/png", "image/jpeg"];
 const MAX_SIZE_MB = 15;
@@ -347,9 +347,11 @@ export default function UploadPage() {
 
           <div className="mt-6 space-y-3">
             {activeItems.length === 0 && (
-              <p className="rounded-md border border-border bg-muted p-4 text-sm text-muted-foreground">
-                Nothing in progress right now. Drop a file above to see it move through the pipeline.
-              </p>
+              <EmptyState
+                icon={Inbox}
+                message="Nothing in progress right now. Drop a file above to see it move through the pipeline."
+                className="rounded-md border border-border bg-muted p-4"
+              />
             )}
 
             {activeItems.map((item) => (
@@ -393,7 +395,7 @@ export default function UploadPage() {
 
           <div className="mt-5 space-y-3">
             {historyItems.length === 0 && (
-              <p className="text-sm text-muted-foreground">Completed uploads will show up here.</p>
+              <EmptyState icon={FileText} message="Completed uploads will show up here." className="p-0" />
             )}
 
             {historyItems.slice(0, 5).map((item) => {

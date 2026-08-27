@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { Menu, X } from "lucide-react";
 import NavLinks, { navLinks } from "@/components/NavLinks";
@@ -9,6 +9,11 @@ import { usePathname } from "next/navigation";
 export default function Header() {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
+  const isHydrated = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false,
+  );
 
   return (
     <header className="sticky top-0 z-20 border-b border-border bg-background/90 backdrop-blur-sm">
@@ -51,7 +56,7 @@ export default function Header() {
                 href={link.href}
                 onClick={() => setOpen(false)}
                 className={`rounded-lg px-3 py-2.5 text-sm font-medium ${
-                  pathname === link.href
+                  isHydrated && pathname === link.href
                     ? "bg-primary text-primary-foreground"
                     : "text-muted-foreground hover:bg-muted"
                 }`}
