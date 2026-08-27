@@ -6,13 +6,17 @@ import { ArrowUpToLine, CheckCircle2, FileText, Inbox, Loader2, ShieldCheck, XCi
 import { EmptyState } from "@/components/TableStates";
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED_TYPES = ["application/pdf", "image/png", "image/jpeg"];
-const MAX_SIZE_MB = 15;
+// Kept in sync with the backend's 10MB limit (backend/app/api/documents.py) —
+// validating client-side to this same value avoids an upload round-trip
+// that the server would reject anyway.
+const MAX_SIZE_MB = 10;
 const POLL_INTERVAL_MS = 3000;
 const STORAGE_KEY = "clearfile:recent-uploads";
 const MAX_TRACKED = 8;
 
-// Mirrors backend/app/models/document.py -> Document.status
-type DocumentStatus = "pending" | "processing" | "needs_review" | "signed";
+// Mirrors backend/app/models/document.py -> Document.status. "extraction_failed"
+// is set by the backend on any extraction error, including the 60s Nutrient timeout.
+type DocumentStatus = "pending" | "processing" | "needs_review" | "signed" | "extraction_failed";
 type UploadStatus = "uploading" | "extracting" | DocumentStatus | "error";
 
 // Only serializable fields live in state / sessionStorage. The actual File
@@ -40,6 +44,7 @@ const STATUS_LABEL: Record<UploadStatus, string> = {
   processing: "Processing",
   needs_review: "Needs review",
   signed: "Signed",
+  extraction_failed: "Extraction failed",
   error: "Failed",
 };
 
@@ -52,16 +57,22 @@ const STATUS_BADGE: Record<UploadStatus, string> = {
   processing: "border-accent bg-accent text-accent-foreground",
   needs_review: "border-accent bg-accent text-accent-foreground",
   signed: "border-primary/20 bg-primary/10 text-primary",
+  extraction_failed: "border-destructive/30 bg-destructive/10 text-destructive",
   error: "border-destructive/30 bg-destructive/10 text-destructive",
 };
 
 // Statuses that mean "the backend is still going to change this on its own" — keep polling.
+// extraction_failed is deliberately excluded: it's a terminal state, polling it forever
+// would just hammer the backend for nothing.
 const POLLABLE: DocumentStatus[] = ["pending", "processing"];
 
 // Splits the single items list into two non-overlapping views instead of
 // showing the same data twice: "active" is what's still moving through the
-// pipeline, "history" is what's done (successfully or not).
+// pipeline, "history" is what's done (successfully, failed, or errored).
 const ACTIVE_STATUSES: UploadStatus[] = ["uploading", "extracting", "pending", "processing"];
+
+// Statuses shown in the history panel with a failure indicator + retry option.
+const FAILED_STATUSES: UploadStatus[] = ["error", "extraction_failed"];
 
 function validateFile(file: File): string | null {
   if (!ACCEPTED_TYPES.includes(file.type)) {
@@ -71,6 +82,19 @@ function validateFile(file: File): string | null {
     return `File is larger than ${MAX_SIZE_MB} MB.`;
   }
   return null;
+}
+
+// Backend validation errors (unsupported type, empty file, too large) come back
+// as { "detail": "..." } on a 4xx response. Falls back to a generic message if
+// the body isn't JSON or doesn't have that shape.
+function extractErrorDetail(responseText: string, status: number): string {
+  try {
+    const parsed = JSON.parse(responseText);
+    if (typeof parsed?.detail === "string") return parsed.detail;
+  } catch {
+    // not JSON — fall through to generic message
+  }
+  return `Server responded ${status}`;
 }
 
 function loadPersisted(): UploadItem[] {
@@ -150,6 +174,12 @@ export default function UploadPage() {
     };
   }, []);
 
+  // POST /documents/{id}/extract runs the Nutrient extraction synchronously
+  // (up to the backend's 60s timeout) and returns the resulting status —
+  // "needs_review" on success, "extraction_failed" on error or timeout. That
+  // status comes back with a normal 200, so it's read from the response body,
+  // not inferred from an HTTP error — a slow-but-successful response and a
+  // "gave up after 60s" response look the same at the HTTP level.
   const extractDocument = async (id: string, documentId: string) => {
     updateItem(id, { status: "extracting", errorMessage: undefined });
     try {
@@ -190,7 +220,10 @@ export default function UploadPage() {
           updateItem(id, { progress: 100, status: "pending" });
         }
       } else {
-        updateItem(id, { status: "error", errorMessage: `Server responded ${xhr.status}` });
+        updateItem(id, {
+          status: "error",
+          errorMessage: extractErrorDetail(xhr.responseText, xhr.status),
+        });
       }
     };
 
@@ -267,6 +300,17 @@ export default function UploadPage() {
     router.push(`/review?document=${item.documentId}`);
   };
 
+  // Human-readable failure reason: use the explicit message when we set one
+  // (upload validation, network error), otherwise fall back to a message for
+  // statuses that come straight from the backend without an errorMessage attached.
+  const failureMessage = (item: UploadItem): string => {
+    if (item.errorMessage) return item.errorMessage;
+    if (item.status === "extraction_failed") {
+      return "Extraction failed — Nutrient didn't return a result within 60 seconds, or hit a processing error.";
+    }
+    return "Something went wrong.";
+  };
+
   const activeItems = items.filter((it) => ACTIVE_STATUSES.includes(it.status));
   const historyItems = items.filter((it) => !ACTIVE_STATUSES.includes(it.status));
 
@@ -316,7 +360,8 @@ export default function UploadPage() {
 
           <h2 className="mt-5 text-2xl font-semibold">Drag and drop your invoice</h2>
           <p className="mt-2 text-muted-foreground">
-            PDF, PNG, and JPG files are supported. The intake workflow begins as soon as the file is uploaded.
+            PDF, PNG, and JPG files are supported, up to {MAX_SIZE_MB} MB. The intake workflow begins as soon as the
+            file is uploaded.
           </p>
 
           <div className="mt-6 flex flex-wrap items-center justify-center gap-3 text-sm text-muted-foreground">
@@ -400,6 +445,7 @@ export default function UploadPage() {
 
             {historyItems.slice(0, 5).map((item) => {
               const canOpen = Boolean(item.documentId);
+              const failed = FAILED_STATUSES.includes(item.status);
               return (
                 <div
                   key={item.id}
@@ -416,7 +462,7 @@ export default function UploadPage() {
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-3">
                       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-card text-foreground">
-                        {item.status === "error" ? (
+                        {failed ? (
                           <XCircle className="h-4 w-4 text-destructive" />
                         ) : (
                           <CheckCircle2 className="h-4 w-4" />
@@ -432,9 +478,9 @@ export default function UploadPage() {
                     </span>
                   </div>
 
-                  {item.status === "error" && (
+                  {failed && (
                     <div className="mt-2 flex items-center justify-between gap-3 text-xs text-destructive">
-                      <span className="truncate">{item.errorMessage}</span>
+                      <span className="truncate">{failureMessage(item)}</span>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -451,15 +497,6 @@ export default function UploadPage() {
             })}
           </div>
 
-          <div className="mt-6 rounded-md border border-primary/20 bg-primary/10 p-4 text-sm text-primary">
-            <div className="flex items-center gap-2 font-semibold">
-              <ShieldCheck className="h-4 w-4" />
-              Secure workflow
-            </div>
-            <p className="mt-2 leading-6 opacity-90">
-              Every upload is encrypted and logged for audit and compliance purposes.
-            </p>
-          </div>
         </aside>
       </div>
     </div>
