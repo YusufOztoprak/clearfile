@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { LoadingRow, ErrorRow, EmptyRow } from "@/components/TableStates";
 import { ChevronDown, ChevronRight, ClipboardList, Search, User } from "lucide-react";
 
@@ -9,7 +9,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 type ApiDocument = {
   id: string;
   filename: string;
-  status: "pending" | "processing" | "needs_review" | "signed";
+  status: "pending" | "processing" | "needs_review" | "signed" | "rejected";
   uploaded_at: string;
 };
 
@@ -17,6 +17,9 @@ type AuditLogEntry = {
   action: string;
   actor: string;
   timestamp: string;
+  // Not populated by the backend yet — see note below formatAction. Included
+  // now so the UI is ready the moment the backend adds it to /audit responses.
+  reason?: string | null;
 };
 
 type AuditEntryWithDoc = AuditLogEntry & {
@@ -50,6 +53,18 @@ function formatAction(action: string): string {
     signed: "Document signed",
   };
   return known[action] ?? action;
+}
+
+// The backend doesn't expose a dedicated "reason" field on audit entries yet
+// (its StatusUpdate schema accepts one, but it's currently dropped before
+// being saved to the AuditLog — a backend bug, not a frontend gap). This
+// reads entry.reason if the backend starts sending it properly, and falls
+// back to parsing a "status_changed_to_rejected_<reason>" suffix as a
+// stop-gap in case the quick fix embeds it in the action string instead.
+function getRejectionReason(entry: AuditLogEntry): string | null {
+  if (entry.reason) return entry.reason;
+  const match = entry.action.match(/^status_changed_to_rejected_(.+)$/);
+  return match ? match[1] : null;
 }
 
 function formatTimestamp(iso: string) {
@@ -289,8 +304,18 @@ export default function AuditPage() {
           </div>
         </div>
 
+        {/* table-fixed + colgroup: column widths are locked to fixed
+            percentages instead of being recalculated from visible content,
+            so expanding/collapsing a row's history no longer reflows the
+            whole table. */}
         <div className="mt-5 overflow-hidden rounded-md border border-border">
-          <table className="min-w-full divide-y divide-border text-left text-sm">
+          <table className="w-full table-fixed divide-y divide-border text-left text-sm">
+            <colgroup>
+              <col className="w-[30%]" />
+              <col className="w-[18%]" />
+              <col className="w-[37%]" />
+              <col className="w-[15%]" />
+            </colgroup>
             <thead className="bg-muted text-muted-foreground">
               <tr>
                 <th className="px-4 py-3 font-medium">Document</th>
@@ -321,11 +346,11 @@ export default function AuditPage() {
                 groups.map((group) => {
                   const isExpanded = expandedIds.has(group.documentId);
                   const olderEvents = group.history.slice(1);
+                  const latestReason = getRejectionReason(group.latest);
 
                   return (
-                    <>
+                    <Fragment key={group.documentId}>
                       <tr
-                        key={group.documentId}
                         onClick={() => toggleExpanded(group.documentId)}
                         className="cursor-pointer hover:bg-muted/50"
                       >
@@ -340,7 +365,7 @@ export default function AuditPage() {
                             ) : (
                               <span className="w-3.5 shrink-0" />
                             )}
-                            <span className="line-clamp-1 max-w-[220px]">{group.filename}</span>
+                            <span className="line-clamp-1 break-all">{group.filename}</span>
                             {olderEvents.length > 0 && (
                               <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                                 {group.history.length}
@@ -351,7 +376,14 @@ export default function AuditPage() {
                         <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
                           {formatTimestamp(group.latest.timestamp)}
                         </td>
-                        <td className="px-4 py-3">{formatAction(group.latest.action)}</td>
+                        <td className="px-4 py-3">
+                          <p>{formatAction(group.latest.action)}</p>
+                          {latestReason && (
+                            <p className="mt-0.5 truncate text-xs text-destructive" title={latestReason}>
+                              Reason: {latestReason}
+                            </p>
+                          )}
+                        </td>
                         <td className="px-4 py-3">
                           <span className="inline-flex items-center gap-1.5 capitalize text-muted-foreground">
                             <User className="h-3.5 w-3.5" />
@@ -361,22 +393,36 @@ export default function AuditPage() {
                       </tr>
 
                       {isExpanded &&
-                        olderEvents.map((entry, idx) => (
-                          <tr key={`${group.documentId}-${entry.timestamp}-${idx}`} className="bg-muted/30">
-                            <td className="px-4 py-2 pl-10 text-xs text-muted-foreground">—</td>
-                            <td className="px-4 py-2 whitespace-nowrap text-xs text-muted-foreground">
-                              {formatTimestamp(entry.timestamp)}
-                            </td>
-                            <td className="px-4 py-2 text-xs text-muted-foreground">{formatAction(entry.action)}</td>
-                            <td className="px-4 py-2">
-                              <span className="inline-flex items-center gap-1.5 text-xs capitalize text-muted-foreground">
-                                <User className="h-3 w-3" />
-                                {entry.actor}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                    </>
+                        olderEvents.map((entry, idx) => {
+                          const reason = getRejectionReason(entry);
+                          return (
+                            <tr key={`${group.documentId}-${entry.timestamp}-${idx}`} className="bg-muted/30">
+                              <td className="px-4 py-2 pl-10">
+                                <span className="block h-full border-l-2 border-border pl-3 text-xs text-transparent">
+                                  .
+                                </span>
+                              </td>
+                              <td className="px-4 py-2 whitespace-nowrap text-xs text-muted-foreground">
+                                {formatTimestamp(entry.timestamp)}
+                              </td>
+                              <td className="px-4 py-2">
+                                <p className="text-xs text-muted-foreground">{formatAction(entry.action)}</p>
+                                {reason && (
+                                  <p className="mt-0.5 truncate text-xs text-destructive" title={reason}>
+                                    Reason: {reason}
+                                  </p>
+                                )}
+                              </td>
+                              <td className="px-4 py-2">
+                                <span className="inline-flex items-center gap-1.5 text-xs capitalize text-muted-foreground">
+                                  <User className="h-3 w-3" />
+                                  {entry.actor}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </Fragment>
                   );
                 })}
             </tbody>

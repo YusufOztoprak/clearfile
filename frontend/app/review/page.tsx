@@ -12,6 +12,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Sparkles,
+  XCircle,
 } from "lucide-react";
 
 import { LoadingRow, ErrorRow, EmptyRow, LoadingState, ErrorState, 
@@ -20,7 +21,7 @@ import { LoadingRow, ErrorRow, EmptyRow, LoadingState, ErrorState,
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // Mirrors backend/app/models/document.py -> Document.status
-type DocumentStatus = "pending" | "processing" | "needs_review" | "signed";
+type DocumentStatus = "pending" | "processing" | "needs_review" | "signed" | "rejected";
 
 type ApiDocument = {
   id: string;
@@ -47,6 +48,7 @@ const STATUS_LABEL: Record<DocumentStatus, string> = {
   processing: "Processing",
   needs_review: "Needs review",
   signed: "Signed",
+  rejected: "Rejected",
 };
 
 const STATUS_BADGE: Record<DocumentStatus, string> = {
@@ -54,6 +56,7 @@ const STATUS_BADGE: Record<DocumentStatus, string> = {
   processing: "border-accent bg-accent text-accent-foreground",
   needs_review: "border-accent bg-accent text-accent-foreground",
   signed: "border-primary/20 bg-primary/10 text-primary",
+  rejected: "border-destructive/30 bg-destructive/10 text-destructive",
 };
 
 type FilterMode = "all" | "flagged" | "reliable";
@@ -186,6 +189,14 @@ export default function ReviewPage() {
   const [signing, setSigning] = useState(false);
   const [signError, setSignError] = useState<string | null>(null);
 
+  // Document-level rejection: a lightweight inline form (not a modal) next
+  // to the sign button, with an optional free-text reason — see backend's
+  // StatusUpdate schema (status + optional reason) on PATCH /status.
+  const [showRejectForm, setShowRejectForm] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+  const [rejecting, setRejecting] = useState(false);
+  const [rejectError, setRejectError] = useState<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -221,6 +232,9 @@ export default function ReviewPage() {
     setLoadingDetail(true);
     setDetailError(null);
     setSignError(null);
+    setRejectError(null);
+    setShowRejectForm(false);
+    setRejectReason("");
 
     fetch(`${API_BASE}/documents/${selectedId}`)
       .then((res) => {
@@ -249,6 +263,11 @@ export default function ReviewPage() {
   const lowConfidenceCount = useMemo(() => fields.filter((f) => !f.approved).length, [fields]);
   const noisyCount = useMemo(() => fields.filter((f) => looksNoisy(f.value)).length, [fields]);
   const allApproved = fields.length > 0 && fields.every((f) => f.approved);
+
+  // A document can only be signed or rejected while it's still actively
+  // under review — once it's already signed or rejected, both actions
+  // no longer make sense and the panel switches to a read-only status view.
+  const isDecided = detail?.status === "signed" || detail?.status === "rejected";
 
   const visibleFields = useMemo(() => {
     let list = fields;
@@ -332,6 +351,36 @@ export default function ReviewPage() {
       setSignError("Signing failed. Check the backend and try again.");
     } finally {
       setSigning(false);
+    }
+  };
+
+  // Document-level reject, separate from per-field "Mark as rejected" — this
+  // sets the whole document's status via PATCH /documents/{id}/status with
+  // an optional free-text reason. Confirmed against the backend's
+  // StatusUpdate schema (status: str, reason: str | None = None).
+  const rejectDocument = async () => {
+    if (!selectedId) return;
+    setRejecting(true);
+    setRejectError(null);
+
+    try {
+      const res = await fetch(`${API_BASE}/documents/${selectedId}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: "rejected",
+          reason: rejectReason.trim() ? rejectReason.trim() : null,
+        }),
+      });
+      if (!res.ok) throw new Error(`Server responded ${res.status}`);
+      setDetail((prev) => (prev ? { ...prev, status: "rejected" } : prev));
+      setDocuments((prev) => prev.map((d) => (d.id === selectedId ? { ...d, status: "rejected" } : d)));
+      setShowRejectForm(false);
+      setRejectReason("");
+    } catch {
+      setRejectError("Rejection failed. Check the backend and try again.");
+    } finally {
+      setRejecting(false);
     }
   };
 
@@ -445,27 +494,91 @@ export default function ReviewPage() {
                 </span>
               </div>
 
-              {fields.length > 0 && detail.status !== "signed" && (
-                <div className="mt-4 flex flex-col gap-3 rounded-md border border-border bg-muted p-3 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-xs text-muted-foreground">
-                    {allApproved
-                      ? "All fields approved — this document is ready to sign."
-                      : `${lowConfidenceCount} field${lowConfidenceCount === 1 ? "" : "s"} still need${lowConfidenceCount === 1 ? "s" : ""} approval before signing.`}
-                  </p>
-                  <button
-                    onClick={signDocument}
-                    disabled={!allApproved || signing}
-                    className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    {signing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PenLine className="h-3.5 w-3.5" />}
-                    Sign document
-                  </button>
+              {fields.length > 0 && !isDecided && (
+                <div className="mt-4 flex flex-col gap-3 rounded-md border border-border bg-muted p-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-xs text-muted-foreground">
+                      {allApproved
+                        ? "All fields approved — this document is ready to sign."
+                        : `${lowConfidenceCount} field${lowConfidenceCount === 1 ? "" : "s"} still need${lowConfidenceCount === 1 ? "s" : ""} approval before signing.`}
+                    </p>
+                    <div className="flex shrink-0 gap-2">
+                      <button
+                        onClick={() => {
+                          setShowRejectForm((v) => !v);
+                          setRejectError(null);
+                        }}
+                        disabled={rejecting}
+                        className="inline-flex items-center justify-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-2 text-xs font-semibold text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <XCircle className="h-3.5 w-3.5" />
+                        Reject document
+                      </button>
+                      <button
+                        onClick={signDocument}
+                        disabled={!allApproved || signing}
+                        className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {signing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PenLine className="h-3.5 w-3.5" />}
+                        Sign document
+                      </button>
+                    </div>
+                  </div>
+
+                  {showRejectForm && (
+                    <div className="rounded-md border border-destructive/20 bg-destructive/5 p-3">
+                      <label htmlFor="reject-reason" className="text-xs font-semibold text-destructive">
+                        Reason (optional)
+                      </label>
+                      <textarea
+                        id="reject-reason"
+                        value={rejectReason}
+                        onChange={(e) => setRejectReason(e.target.value)}
+                        placeholder="e.g. Amount doesn't match the purchase order, or vendor is unrecognized…"
+                        rows={2}
+                        className="mt-1.5 w-full resize-none rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-destructive/40"
+                      />
+                      <div className="mt-2 flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => {
+                            setShowRejectForm(false);
+                            setRejectReason("");
+                          }}
+                          disabled={rejecting}
+                          className="rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={rejectDocument}
+                          disabled={rejecting}
+                          className="inline-flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-xs font-semibold text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {rejecting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                          Confirm rejection
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {isDecided && detail.status === "rejected" && (
+                <div className="mt-4 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                  <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <p>This document has been rejected. Check the audit trail for who rejected it and when.</p>
                 </div>
               )}
 
               {signError && (
                 <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                   {signError}
+                </p>
+              )}
+
+              {rejectError && (
+                <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {rejectError}
                 </p>
               )}
 
