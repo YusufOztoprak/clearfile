@@ -12,7 +12,7 @@ from app.models import Document, AuditLog, ExtractedField
 from nutrient_dws import NutrientClient
 from app.core.config import settings
 
-openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+openai_client = AsyncOpenAI(api_key=settings.openai_api_key, timeout=10.0)
 
 
 async def generate_review_note(field_name: str, value: str, confidence: float) -> str:
@@ -164,8 +164,7 @@ def update_document_status(document_id: uuid.UUID, payload: StatusUpdate, db: Se
     if payload.reason:
         action += f"_{payload.reason}"
 
-
-    db.add(AuditLog(id=uuid.uuid4(), document_id=doc.id, action=f"status_changed_to_{payload.status}", actor="system"))
+    db.add(AuditLog(id=uuid.uuid4(), document_id=doc.id, action=action, actor="system"))
     db.commit()
     db.refresh(doc)
 
@@ -234,7 +233,7 @@ async def extract_document(document_id: uuid.UUID, db: Session = Depends(get_db)
 
     pairs = response.get("data", {}).get("pages", [{}])[0].get("keyValuePairs", [])
 
-    saved_fields = []
+    parsed_fields = []
     for pair in pairs:
         field_name = pair.get("key", {}).get("content", "").strip()
         value = pair.get("value", {}).get("content", "").strip()
@@ -244,25 +243,39 @@ async def extract_document(document_id: uuid.UUID, db: Session = Depends(get_db)
             continue
 
         needs_review = confidence < settings.confidence_threshold
-        note = None
-        if needs_review:
-            note = await generate_review_note(field_name, value, confidence)
+        parsed_fields.append({
+            "field_name": field_name,
+            "value": value,
+            "confidence": confidence,
+            "needs_review": needs_review,
+        })
+
+    review_tasks = [
+        generate_review_note(f["field_name"], f["value"], f["confidence"])
+        for f in parsed_fields if f["needs_review"]
+    ]
+    review_notes = await asyncio.gather(*review_tasks) if review_tasks else []
+    note_iter = iter(review_notes)
+
+    saved_fields = []
+    for f in parsed_fields:
+        note = next(note_iter) if f["needs_review"] else None
 
         field = ExtractedField(
             id=uuid.uuid4(),
             document_id=doc.id,
-            field_name=field_name,
-            value=value,
-            confidence_score=confidence,
-            approved=not needs_review,
+            field_name=f["field_name"],
+            value=f["value"],
+            confidence_score=f["confidence"],
+            approved=not f["needs_review"],
             review_note=note,
         )
         db.add(field)
         saved_fields.append({
-            "field_name": field_name,
-            "value": value,
-            "confidence_score": confidence,
-            "needs_review": needs_review,
+            "field_name": f["field_name"],
+            "value": f["value"],
+            "confidence_score": f["confidence"],
+            "needs_review": f["needs_review"],
             "review_note": note,
         })
 
@@ -271,7 +284,6 @@ async def extract_document(document_id: uuid.UUID, db: Session = Depends(get_db)
     db.commit()
 
     return {"id": str(doc.id), "status": doc.status, "extracted_fields": saved_fields}
-
 
 SIGNED_DIR = Path("signed")
 SIGNED_DIR.mkdir(exist_ok=True)
