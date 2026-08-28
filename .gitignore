@@ -21,3 +21,10 @@ uploads/
 
 test_extraction.py
 test-invoice.png
+
+test_signing.py
+test_invoice.html
+test_output.pdf
+test_signed.pdf
+
+signed/

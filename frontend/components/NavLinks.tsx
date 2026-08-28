@@ -2,16 +2,24 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useSyncExternalStore } from "react";
 
 export const navLinks = [
-  { href: "/dashboard", label: "Dashboard" },
   { href: "/review", label: "Review" },
   { href: "/archive", label: "Archive" },
+  { href: "/dashboard", label: "Dashboard" },
+  { href: "/audit", label: "Audit" },
 ];
 
 function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
   const pathname = usePathname();
-  const isActive = pathname === href;
+  const isHydrated = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false,
+  );
+
+  const isActive = isHydrated && pathname === href;
 
   return (
     <Link

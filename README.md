@@ -18,4 +18,3 @@ Built for the DevNetwork API+Cloud+AI Hackathon 2026 (Nutrient DWS Challenge).
 
 ## Setup
 _(coming soon)_
-EOF

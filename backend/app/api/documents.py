@@ -132,6 +132,21 @@ def get_document_status(document_id: uuid.UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Document not found")
     return {"id": str(doc.id), "status": doc.status}
 
+@router.get("/{document_id}/audit")
+def get_document_audit(document_id: uuid.UUID, db: Session = Depends(get_db)):
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    logs = db.query(AuditLog).filter(AuditLog.document_id == doc.id).order_by(AuditLog.timestamp.asc()).all()
+
+    return {
+        "id": str(doc.id),
+        "audit_trail": [
+            {"action": log.action, "actor": log.actor, "timestamp": log.timestamp}
+            for log in logs
+        ],
+    }
 
 @router.patch("/{document_id}/status")
 def update_document_status(document_id: uuid.UUID, payload: StatusUpdate, db: Session = Depends(get_db)):
