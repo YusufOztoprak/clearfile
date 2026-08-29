@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ClipboardList,
   Download,
+  Eye,
   FileX2,
   Filter,
   Inbox,
@@ -21,7 +22,7 @@ import {
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // Mirrors backend/app/models/document.py -> Document.status
-type DocumentStatus = "pending" | "processing" | "needs_review" | "signed";
+type DocumentStatus = "pending" | "processing" | "needs_review" | "signed" | "rejected";
 type StatusFilter = "all" | DocumentStatus;
 
 type ApiDocument = {
@@ -49,6 +50,7 @@ const STATUS_LABEL: Record<DocumentStatus, string> = {
   processing: "Processing",
   needs_review: "Needs review",
   signed: "Signed",
+  rejected: "Rejected",
 };
 
 const STATUS_BADGE: Record<DocumentStatus, string> = {
@@ -56,6 +58,7 @@ const STATUS_BADGE: Record<DocumentStatus, string> = {
   processing: "border-accent bg-accent text-accent-foreground",
   needs_review: "border-accent bg-accent text-accent-foreground",
   signed: "border-primary/20 bg-primary/10 text-primary",
+  rejected: "border-destructive/30 bg-destructive/10 text-destructive",
 };
 
 const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
@@ -64,6 +67,7 @@ const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: "processing", label: "Processing" },
   { value: "needs_review", label: "Needs review" },
   { value: "signed", label: "Signed" },
+  { value: "rejected", label: "Rejected" },
 ];
 
 function formatAction(action: string): string {
@@ -252,8 +256,8 @@ export default function DashboardPage() {
         try {
           const res = await fetch(`${API_BASE}/documents/${doc.id}/audit`);
           if (!res.ok) throw new Error(String(res.status));
-          const data: { logs: AuditLogEntry[] } = await res.json();
-          return data.logs.map((log) => ({ ...log, documentId: doc.id, filename: doc.filename }));
+          const data: { audit_trail: AuditLogEntry[] } = await res.json();
+          return data.audit_trail.map((log) => ({ ...log, documentId: doc.id, filename: doc.filename }));
         } catch {
           return [];
         }
@@ -301,12 +305,13 @@ export default function DashboardPage() {
     { label: "Signed", value: String(signedCount), delta: "Completed" },
   ];
 
-  // Same convention as the archive page: a real download link once the
-  // backend returns signed_file_path and serves it via a download route.
-  // Neither exists yet, so this degrades to a disabled state instead of a
-  // dead link.
-  const downloadUrl = (doc: ApiDocument) =>
-    doc.signed_file_path ? `${API_BASE}/documents/${doc.id}/download` : null;
+  // Wired directly to the backend's download route now that it exists —
+  // gated on status === "signed" (the only status guaranteed to have a
+  // signed_file_path saved server-side), not on signed_file_path being
+  // present in this response, since GET /documents doesn't expose that
+  // field yet.
+  const downloadUrl = (doc: ApiDocument) => `${API_BASE}/documents/${doc.id}/download`;
+  const viewUrl = (doc: ApiDocument) => `/viewer?document=${doc.id}`;
 
   return (
     <div className="space-y-8 py-4">
@@ -411,49 +416,42 @@ export default function DashboardPage() {
                   />
                 )}
 
-                {filtered.map((doc) => {
-                  const href = doc.status === "signed" ? downloadUrl(doc) : null;
-
-                  return (
-                    <tr key={doc.id} className="hover:bg-muted/50">
-                      <td className="px-4 py-3 font-semibold">
-                        <span className="line-clamp-1">{doc.filename}</span>
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">{formatTimestamp(doc.uploaded_at)}</td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={`rounded-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${STATUS_BADGE[doc.status]}`}
+                {filtered.map((doc) => (
+                  <tr key={doc.id} className="hover:bg-muted/50">
+                    <td className="px-4 py-3 font-semibold">
+                      <span className="line-clamp-1">{doc.filename}</span>
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">{formatTimestamp(doc.uploaded_at)}</td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`rounded-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${STATUS_BADGE[doc.status]}`}
+                      >
+                        {STATUS_LABEL[doc.status]}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="inline-flex items-center gap-2">
+                        <a
+                          href={viewUrl(doc)}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted/70"
                         >
-                          {STATUS_LABEL[doc.status]}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        {doc.status === "signed" ? (
-                          href ? (
-                            <a
-                              href={href}
-                              download
-                              className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary transition hover:bg-primary/20"
-                            >
-                              <Download className="h-3.5 w-3.5" />
-                              Download
-                            </a>
-                          ) : (
-                            <span
-                              title="The backend stores the signed file but doesn't expose a download link yet."
-                              className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-md border border-border bg-muted px-2.5 py-1.5 text-xs font-medium text-muted-foreground opacity-60"
-                            >
-                              <Download className="h-3.5 w-3.5" />
-                              Not available
-                            </span>
-                          )
-                        ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
+                          <Eye className="h-3.5 w-3.5" />
+                          View
+                        </a>
+                        {doc.status === "signed" && (
+                          <a
+                            href={downloadUrl(doc)}
+                            download
+                            className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary transition hover:bg-primary/20"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                            Download
+                          </a>
                         )}
-                      </td>
-                    </tr>
-                  );
-                })}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -531,7 +529,6 @@ export default function DashboardPage() {
           </div>
         </aside>
       </section>
-
     </div>
   );
 }

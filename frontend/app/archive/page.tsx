@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Archive, Download, FileText, Search, ShieldCheck } from "lucide-react";
+import { Archive, Download, Eye, FileText, Search, ShieldCheck } from "lucide-react";
 import { LoadingRow, EmptyRow } from "@/components/TableStates";
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // Mirrors backend/app/models/document.py -> Document.status
-type DocumentStatus = "pending" | "processing" | "needs_review" | "signed";
+type DocumentStatus = "pending" | "processing" | "needs_review" | "signed" | "rejected";
 
 type ApiDocument = {
   id: string;
@@ -171,15 +171,23 @@ export default function ArchivePage() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <a
-                      href={`${API_BASE}/documents/${doc.id}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted/70"
-                    >
-                      <Download className="h-3.5 w-3.5" />
-                      View
-                    </a>
+                    <div className="inline-flex items-center gap-2">
+                      <a
+                        href={`/viewer?document=${doc.id}`}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted/70"
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                        View
+                      </a>
+                      <a
+                        href={`${API_BASE}/documents/${doc.id}/download`}
+                        download
+                        className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary transition hover:bg-primary/20"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        Download
+                      </a>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -190,10 +198,8 @@ export default function ArchivePage() {
         <div className="mt-4 flex items-start gap-2 text-xs text-muted-foreground">
           <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <p>
-            There isn&apos;t a dedicated signing endpoint yet (planned for the extraction/signing milestone) — a
-            document only reaches &quot;signed&quot; once its status is updated via <code>PATCH /documents/&#123;id&#125;/status</code>.
-            The &quot;View&quot; action opens the raw API response for now; it will point to the actual signed
-            file and its audit trail once that part of the backend exists.
+            &quot;View&quot; opens the document in the Nutrient viewer, and &quot;Download&quot; fetches the signed
+            PDF via <code>GET /documents/&#123;id&#125;/download</code>.
           </p>
         </div>
       </section>
