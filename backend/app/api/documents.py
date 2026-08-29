@@ -11,6 +11,7 @@ from app.core.database import get_db
 from app.models import Document, AuditLog, ExtractedField
 from nutrient_dws import NutrientClient
 from app.core.config import settings
+from fastapi.responses import FileResponse
 
 openai_client = AsyncOpenAI(api_key=settings.openai_api_key, timeout=10.0)
 
@@ -147,6 +148,41 @@ def get_document_audit(document_id: uuid.UUID, db: Session = Depends(get_db)):
             for log in logs
         ],
     }
+
+@router.get("/{document_id}/file")
+def get_document_file(document_id: uuid.UUID, db: Session = Depends(get_db)):
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_path = next(UPLOAD_DIR.glob(f"{document_id}_*"), None)
+    if not file_path or not file_path.exists():
+        raise HTTPException(status_code=404, detail="Original file not found or does not exist")
+
+    return FileResponse(
+        path=file_path,
+        filename=doc.filename,
+        media_type="application/octet-stream"
+    )
+
+@router.get("/{document_id}/signed-file")
+def get_signed_file(document_id: uuid.UUID, db: Session = Depends(get_db)):
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not doc.signed_file_path:
+        raise HTTPException(status_code=404, detail="Document has not been signed")
+
+    signed_path = Path(doc.signed_file_path)
+    if not signed_path.exists():
+        raise HTTPException(status_code=404, detail="Signed file not found on disk")
+
+    return FileResponse(
+        path=signed_path,
+        filename=f"{doc.filename}_signed.pdf",
+        media_type="application/pdf"
+    )
 
 @router.patch("/{document_id}/status")
 def update_document_status(document_id: uuid.UUID, payload: StatusUpdate, db: Session = Depends(get_db)):
