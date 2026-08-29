@@ -5,9 +5,9 @@ import { usePathname } from "next/navigation";
 import { useSyncExternalStore } from "react";
 
 export const navLinks = [
+  { href: "/dashboard", label: "Dashboard" },
   { href: "/review", label: "Review" },
   { href: "/archive", label: "Archive" },
-  { href: "/dashboard", label: "Dashboard" },
   { href: "/audit", label: "Audit" },
 ];
 

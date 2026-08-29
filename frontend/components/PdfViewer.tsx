@@ -12,11 +12,11 @@ const SDK_SCRIPT_SRC = "https://cdn.cloud.nutrient.io/pspdfkit-web@1.20.0/nutrie
 const SDK_SCRIPT_ID = "nutrient-viewer-sdk";
 
 // Optional — Nutrient's own Next.js getting-started guide doesn't require a
-// licenseKey for trial/dev use (it just shows a watermark without one). Only
-// set NEXT_PUBLIC_NUTRIENT_LICENSE_KEY if you have a genuine Web SDK key —
-// the DWS Processor/Data Extraction/Viewer API keys (pdf_live_...) are a
-// different product and won't work here, so leaving this unset is safer
-// than passing the wrong kind of key.
+// licenseKey for trial/dev use (it just shows a "For Evaluation Purposes
+// Only" watermark without one). Only set NEXT_PUBLIC_NUTRIENT_LICENSE_KEY
+// if you have a genuine Web SDK key — the DWS Processor/Data
+// Extraction/Viewer API keys (pdf_live_...) are a different product and
+// won't remove the watermark.
 const LICENSE_KEY = process.env.NEXT_PUBLIC_NUTRIENT_LICENSE_KEY || undefined;
 
 declare global {
@@ -27,8 +27,11 @@ declare global {
         document: string;
         useCDN?: boolean;
         licenseKey?: string;
+        initialViewState?: unknown;
       }) => Promise<unknown>;
       unload: (container: HTMLElement | string) => void;
+      ViewState: new (config: { zoom: unknown }) => unknown;
+      ZoomMode: { FIT_TO_VIEWPORT: unknown; FIT_TO_WIDTH: unknown };
     };
   }
 }
@@ -62,7 +65,6 @@ export default function PdfViewer({
   className,
 }: {
   // Must be a URL the browser can fetch directly (same-origin or CORS-enabled).
-  // e.g. `${API_BASE}/documents/{id}/download` once that backend route exists.
   documentUrl: string;
   className?: string;
 }) {
@@ -81,11 +83,14 @@ export default function PdfViewer({
         return window.NutrientViewer.load({
           container: containerRef.current,
           document: documentUrl,
-          // Required since SDK 1.9 — without it, the SDK tries to
-          // auto-detect where its own WebAssembly assets live and fails to
-          // initialize (this was the actual cause of the "error occurred
-          // while initializing" message, not the license key).
           useCDN: true,
+          // FIT_TO_VIEWPORT shows the whole page within the available space
+          // (shrinking it if needed) instead of the default FIT_TO_WIDTH,
+          // which stretches the page to fill the container's full width —
+          // that's what was making the PDF render larger than necessary.
+          initialViewState: new window.NutrientViewer.ViewState({
+            zoom: window.NutrientViewer.ZoomMode.FIT_TO_VIEWPORT,
+          }),
           ...(LICENSE_KEY ? { licenseKey: LICENSE_KEY } : {}),
         });
       })
@@ -126,8 +131,8 @@ export default function PdfViewer({
           <AlertTriangle className="h-5 w-5" />
           <p>{errorMessage}</p>
           <p className="text-xs text-muted-foreground">
-            Check that <code>GET /documents/&#123;id&#125;/download</code> exists on the backend and returns the
-            signed PDF — this is the most common cause once the SDK itself initializes correctly.
+            Check that <code>GET /documents/&#123;id&#125;/file</code> or{" "}
+            <code>/signed-file</code> exists on the backend and returns the PDF.
           </p>
         </div>
       )}
