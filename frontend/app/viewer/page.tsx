@@ -74,43 +74,49 @@ export default function ViewerPage() {
 
   // Two distinct backend routes, not one — /file is whatever was originally
   // uploaded (PNG/JPG/PDF), /signed-file is always a PDF and only exists
-  // once the document has actually been signed (404 otherwise). Showing the
-  // signed PDF once it exists is more useful than the pre-signature original,
-  // since that's the version with the real digital signature embedded.
+  // once the document has actually been signed (404 otherwise).
   const documentUrl =
     status === "signed"
       ? `${API_BASE}/documents/${documentId}/signed-file`
       : `${API_BASE}/documents/${documentId}/file`;
 
   return (
-    <div className="flex h-[calc(100vh-6rem)] flex-col gap-4 py-4">
-      <div className="flex items-center justify-between">
+    // h-screen instead of the page's usual py-4 wrapper + a fixed calc()
+    // offset — the header bar below is now a single slim row (py-2, no
+    // page title/subtitle repeated here) so almost all of the vertical
+    // space goes to the actual PDF instead of chrome around it.
+    <div className="-my-4 flex h-screen flex-col">
+      <div className="flex items-center justify-between border-b border-border bg-card px-4 py-2">
         <button
           onClick={() => router.back()}
-          className="inline-flex items-center gap-2 rounded-md border border-border bg-muted px-3 py-2 text-sm font-medium transition hover:bg-muted/70"
+          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted/70"
         >
-          <ArrowLeft className="h-4 w-4" />
+          <ArrowLeft className="h-3.5 w-3.5" />
           Back
         </button>
 
         {filename && (
-          <span className="line-clamp-1 text-sm font-medium text-muted-foreground">{filename}</span>
+          <span className="line-clamp-1 text-xs font-medium text-muted-foreground">{filename}</span>
         )}
       </div>
 
-      {loadingDoc && (
-        <div className="flex flex-1 items-center justify-center text-muted-foreground">
-          <Loader2 className="h-5 w-5 animate-spin" />
-        </div>
-      )}
+      <div className="flex-1 overflow-hidden">
+        {loadingDoc && (
+          <div className="flex h-full items-center justify-center text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin" />
+          </div>
+        )}
 
-      {!loadingDoc && docError && (
-        <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {docError}
-        </p>
-      )}
+        {!loadingDoc && docError && (
+          <p className="m-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {docError}
+          </p>
+        )}
 
-      {!loadingDoc && !docError && <PdfViewer documentUrl={documentUrl} className="flex-1" />}
+        {!loadingDoc && !docError && (
+          <PdfViewer documentUrl={documentUrl} className="h-full rounded-none border-0" />
+        )}
+      </div>
     </div>
   );
 }

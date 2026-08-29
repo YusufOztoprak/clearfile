@@ -310,7 +310,7 @@ export default function DashboardPage() {
   // signed_file_path saved server-side), not on signed_file_path being
   // present in this response, since GET /documents doesn't expose that
   // field yet.
-  const downloadUrl = (doc: ApiDocument) => `${API_BASE}/documents/${doc.id}/download`;
+  const downloadUrl = (doc: ApiDocument) => `${API_BASE}/documents/${doc.id}/signed-file`;
   const viewUrl = (doc: ApiDocument) => `/viewer?document=${doc.id}`;
 
   return (
@@ -424,7 +424,7 @@ export default function DashboardPage() {
                     <td className="px-4 py-3 text-muted-foreground">{formatTimestamp(doc.uploaded_at)}</td>
                     <td className="px-4 py-3">
                       <span
-                        className={`rounded-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${STATUS_BADGE[doc.status]}`}
+                        className={`whitespace-nowrap rounded-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${STATUS_BADGE[doc.status]}`}
                       >
                         {STATUS_LABEL[doc.status]}
                       </span>

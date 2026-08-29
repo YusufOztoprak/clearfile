@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Check,
   ChevronDown,
+  ChevronRight,
   Eye,
   FileText,
   Inbox,
@@ -198,6 +199,16 @@ export default function ReviewPage() {
   const [rejecting, setRejecting] = useState(false);
   const [rejectError, setRejectError] = useState<string | null>(null);
 
+  // Collapsed by default — this explanation is only useful the first few
+  // times someone uses the page, not on every single visit.
+  const [showInfoBanner, setShowInfoBanner] = useState(false);
+
+  // Every field can be expanded/collapsed the same way regardless of
+  // whether it's flagged or reliable — this set only decides the *default*
+  // state when a document loads (flagged/noisy fields start open, reliable
+  // ones start closed), not which fields are allowed to toggle.
+  const [expandedFieldIds, setExpandedFieldIds] = useState<Set<string>>(new Set());
+
   useEffect(() => {
     let cancelled = false;
 
@@ -243,7 +254,15 @@ export default function ReviewPage() {
         return res.json();
       })
       .then((data: ApiDocumentDetail) => {
-        if (!cancelled) setDetail(data);
+        if (cancelled) return;
+        setDetail(data);
+        // Default: anything flagged (unapproved) or noisy-looking opens
+        // expanded so it gets attention immediately; reliable fields start
+        // collapsed to keep the page scannable.
+        const defaultExpanded = new Set(
+          data.extracted_fields.filter((f) => !f.approved || looksNoisy(f.value)).map((f) => f.id)
+        );
+        setExpandedFieldIds(defaultExpanded);
       })
       .catch(() => {
         if (!cancelled) setDetailError("Could not load this document's extracted fields.");
@@ -385,6 +404,15 @@ export default function ReviewPage() {
     }
   };
 
+  function toggleFieldExpanded(fieldId: string) {
+    setExpandedFieldIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(fieldId)) next.delete(fieldId);
+      else next.add(fieldId);
+      return next;
+    });
+  }
+
   return (
     <div className="space-y-8 py-4">
       <section className="rounded-lg border border-border bg-card p-5 text-card-foreground sm:p-6">
@@ -396,14 +424,24 @@ export default function ReviewPage() {
           Fields below the confidence threshold are flagged automatically and come with a short note.
         </p>
 
-        <div className="mt-4 flex items-start gap-2 rounded-md border border-accent bg-accent/40 p-3 text-sm text-accent-foreground">
-          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
-          <p>
-            Only fields Nutrient managed to detect show up below. If something you expect from the original
-            invoice is missing entirely, that&apos;s a detection gap, not a rejection — check the document in the
-            viewer to confirm before trusting the extraction as complete.
-          </p>
-        </div>
+        <button
+          onClick={() => setShowInfoBanner((v) => !v)}
+          className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-accent-foreground underline"
+        >
+          <ShieldAlert className="h-3.5 w-3.5" />
+          {showInfoBanner ? "Hide" : "Why some fields might be missing"}
+        </button>
+
+        {showInfoBanner && (
+          <div className="mt-2 flex items-start gap-2 rounded-md border border-accent bg-accent/40 p-3 text-sm text-accent-foreground">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+            <p>
+              Only fields Nutrient managed to detect show up below. If something you expect from the original
+              invoice is missing entirely, that&apos;s a detection gap, not a rejection — check the document in the
+              viewer to confirm before trusting the extraction as complete.
+            </p>
+          </div>
+        )}
 
         {listError && <ErrorState message={listError} />}
       </section>
@@ -481,16 +519,22 @@ export default function ReviewPage() {
 
           {selectedId && !loadingDetail && detail && (
             <>
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-semibold">{detail.filename}</h2>
-                  <p className="text-sm text-muted-foreground">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-lg font-semibold">{detail.filename}</h2>
+                    <span className={`rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${STATUS_BADGE[detail.status]}`}>
+                      {STATUS_LABEL[detail.status]}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-sm text-muted-foreground">
                     {fields.length} field{fields.length === 1 ? "" : "s"} extracted
                     {lowConfidenceCount > 0 && ` — ${lowConfidenceCount} need${lowConfidenceCount === 1 ? "s" : ""} attention`}
                     {noisyCount > 0 && ` — ${noisyCount} look${noisyCount === 1 ? "s" : ""} unusual`}
                   </p>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
                   <a
                     href={`/viewer?document=${selectedId}`}
                     className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted/70"
@@ -498,78 +542,67 @@ export default function ReviewPage() {
                     <Eye className="h-3.5 w-3.5" />
                     View
                   </a>
-                  <span className={`rounded-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${STATUS_BADGE[detail.status]}`}>
-                    {STATUS_LABEL[detail.status]}
-                  </span>
-                </div>
-              </div>
 
-              {fields.length > 0 && !isDecided && (
-                <div className="mt-4 flex flex-col gap-3 rounded-md border border-border bg-muted p-3">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-xs text-muted-foreground">
-                      {allApproved
-                        ? "All fields approved — this document is ready to sign."
-                        : `${lowConfidenceCount} field${lowConfidenceCount === 1 ? "" : "s"} still need${lowConfidenceCount === 1 ? "s" : ""} approval before signing.`}
-                    </p>
-                    <div className="flex shrink-0 gap-2">
+                  {fields.length > 0 && !isDecided && (
+                    <>
                       <button
                         onClick={() => {
                           setShowRejectForm((v) => !v);
                           setRejectError(null);
                         }}
                         disabled={rejecting}
-                        className="inline-flex items-center justify-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-2 text-xs font-semibold text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
+                        className="inline-flex items-center justify-center gap-1.5 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-1.5 text-xs font-semibold text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         <XCircle className="h-3.5 w-3.5" />
-                        Reject document
+                        Reject
                       </button>
                       <button
                         onClick={signDocument}
                         disabled={!allApproved || signing}
-                        className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                        title={allApproved ? undefined : "All fields must be approved before signing"}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         {signing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PenLine className="h-3.5 w-3.5" />}
-                        Sign document
+                        Sign
                       </button>
-                    </div>
-                  </div>
-
-                  {showRejectForm && (
-                    <div className="rounded-md border border-destructive/20 bg-destructive/5 p-3">
-                      <label htmlFor="reject-reason" className="text-xs font-semibold text-destructive">
-                        Reason (optional)
-                      </label>
-                      <textarea
-                        id="reject-reason"
-                        value={rejectReason}
-                        onChange={(e) => setRejectReason(e.target.value)}
-                        placeholder="e.g. Amount doesn't match the purchase order, or vendor is unrecognized…"
-                        rows={2}
-                        className="mt-1.5 w-full resize-none rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-destructive/40"
-                      />
-                      <div className="mt-2 flex items-center justify-end gap-2">
-                        <button
-                          onClick={() => {
-                            setShowRejectForm(false);
-                            setRejectReason("");
-                          }}
-                          disabled={rejecting}
-                          className="rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          onClick={rejectDocument}
-                          disabled={rejecting}
-                          className="inline-flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-xs font-semibold text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          {rejecting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                          Confirm rejection
-                        </button>
-                      </div>
-                    </div>
+                    </>
                   )}
+                </div>
+              </div>
+
+              {showRejectForm && !isDecided && (
+                <div className="mt-3 rounded-md border border-destructive/20 bg-destructive/5 p-3">
+                  <label htmlFor="reject-reason" className="text-xs font-semibold text-destructive">
+                    Reason (optional)
+                  </label>
+                  <textarea
+                    id="reject-reason"
+                    value={rejectReason}
+                    onChange={(e) => setRejectReason(e.target.value)}
+                    placeholder="e.g. Amount doesn't match the purchase order, or vendor is unrecognized…"
+                    rows={2}
+                    className="mt-1.5 w-full resize-none rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-destructive/40"
+                  />
+                  <div className="mt-2 flex items-center justify-end gap-2">
+                    <button
+                      onClick={() => {
+                        setShowRejectForm(false);
+                        setRejectReason("");
+                      }}
+                      disabled={rejecting}
+                      className="rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={rejectDocument}
+                      disabled={rejecting}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-xs font-semibold text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {rejecting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                      Confirm rejection
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -593,7 +626,7 @@ export default function ReviewPage() {
               )}
 
               {fields.length > 0 && (
-                <div className="mt-5 flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
                   <SortDropdown value={sortMode} onChange={setSortMode} />
 
                   <div className="flex flex-wrap gap-1.5">
@@ -614,7 +647,7 @@ export default function ReviewPage() {
                 </div>
               )}
 
-              <div className="mt-4 space-y-3">
+              <div className="mt-4 space-y-2">
                 {fields.length === 0 && (
                   <p className="rounded-md border border-border bg-muted p-4 text-sm text-muted-foreground">
                     No fields extracted yet for this document. Run extraction first.
@@ -632,6 +665,43 @@ export default function ReviewPage() {
                   const noisy = looksNoisy(field.value);
                   const isSaving = savingFieldId === field.id;
                   const saveError = fieldErrors[field.id];
+                  const isExpanded = expandedFieldIds.has(field.id);
+
+                  // Collapsed view — same layout for every field regardless
+                  // of flagged/reliable status, just a different leading
+                  // icon. Clicking anywhere on the row (not just the
+                  // chevron) expands it, and the chevron is always on the
+                  // same left-hand spot so collapsing later is the same motion.
+                  if (!isExpanded) {
+                    return (
+                      <div
+                        key={field.id}
+                        onClick={() => toggleFieldExpanded(field.id)}
+                        className={`flex cursor-pointer items-center gap-3 rounded-md border px-3 py-2 transition ${
+                          flagged
+                            ? "border-destructive/30 bg-destructive/5 hover:bg-destructive/10"
+                            : "border-border bg-muted/40 hover:bg-muted/70"
+                        }`}
+                      >
+                        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        {flagged ? (
+                          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+                        ) : (
+                          <Check className="h-3.5 w-3.5 shrink-0 text-primary" />
+                        )}
+                        <span className="shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                          {field.field_name.replace(/_/g, " ")}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-mono text-sm">{field.value}</span>
+                        {noisy && (
+                          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600" />
+                        )}
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          {formatConfidence(field.confidence_score)}
+                        </span>
+                      </div>
+                    );
+                  }
 
                   return (
                     <div
@@ -640,14 +710,24 @@ export default function ReviewPage() {
                         flagged ? "border-destructive/30 bg-destructive/5" : "border-border bg-muted"
                       }`}
                     >
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                            {field.field_name.replace(/_/g, " ")}
-                          </p>
-                          <p className="mt-1 break-words font-mono text-sm font-semibold leading-relaxed">
-                            {field.value}
-                          </p>
+                      {/* Same chevron, same left-hand spot as the collapsed
+                          row above — this header is the only part that
+                          toggles, so the Approve/Reject button below isn't
+                          accidentally caught by the same click. */}
+                      <div
+                        onClick={() => toggleFieldExpanded(field.id)}
+                        className="flex cursor-pointer flex-wrap items-start justify-between gap-3"
+                      >
+                        <div className="flex min-w-0 items-start gap-2">
+                          <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                              {field.field_name.replace(/_/g, " ")}
+                            </p>
+                            <p className="mt-1 break-words font-mono text-sm font-semibold leading-relaxed">
+                              {field.value}
+                            </p>
+                          </div>
                         </div>
 
                         <div className="flex shrink-0 flex-col items-end gap-1.5">

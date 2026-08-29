@@ -180,7 +180,7 @@ export default function ArchivePage() {
                         View
                       </a>
                       <a
-                        href={`${API_BASE}/documents/${doc.id}/download`}
+                        href={`${API_BASE}/documents/${doc.id}/signed-file`}
                         download
                         className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary transition hover:bg-primary/20"
                       >
