@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Check,
   ChevronDown,
+  Eye,
   FileText,
   Inbox,
   Loader2,
@@ -489,9 +490,18 @@ export default function ReviewPage() {
                     {noisyCount > 0 && ` — ${noisyCount} look${noisyCount === 1 ? "s" : ""} unusual`}
                   </p>
                 </div>
-                <span className={`rounded-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${STATUS_BADGE[detail.status]}`}>
-                  {STATUS_LABEL[detail.status]}
-                </span>
+                <div className="flex shrink-0 items-center gap-2">
+                  <a
+                    href={`/viewer?document=${selectedId}`}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted/70"
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                    View
+                  </a>
+                  <span className={`rounded-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${STATUS_BADGE[detail.status]}`}>
+                    {STATUS_LABEL[detail.status]}
+                  </span>
+                </div>
               </div>
 
               {fields.length > 0 && !isDecided && (

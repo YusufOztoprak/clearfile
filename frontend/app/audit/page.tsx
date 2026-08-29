@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { LoadingRow, ErrorRow, EmptyRow } from "@/components/TableStates";
-import { ChevronDown, ChevronRight, ClipboardList, Search, User } from "lucide-react";
+import { ChevronDown, ChevronRight, ClipboardList, Eye, Search, User } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -17,8 +17,9 @@ type AuditLogEntry = {
   action: string;
   actor: string;
   timestamp: string;
-  // Not populated by the backend yet — see note below formatAction. Included
-  // now so the UI is ready the moment the backend adds it to /audit responses.
+  // Not populated by the backend as a separate field yet — it's embedded in
+  // the action string instead (see parseStatusChange below). Kept here so
+  // the UI is ready the moment the backend exposes a real "reason" field.
   reason?: string | null;
 };
 
@@ -36,9 +37,27 @@ type DocumentGroup = {
 
 type ActorFilter = "all" | string;
 
+// Mirrors the backend's `valid_statuses` set (backend/app/api/documents.py).
+// Needed to split "status_changed_to_<status>_<reason>" correctly — a plain
+// prefix strip can't tell where the status ends and the reason begins,
+// since the backend joins them with a plain underscore.
+const KNOWN_STATUSES = ["pending", "processing", "needs_review", "signed", "rejected"];
+
+function parseStatusChange(action: string): { status: string; reason: string | null } | null {
+  for (const status of KNOWN_STATUSES) {
+    const prefix = `status_changed_to_${status}`;
+    if (action === prefix) return { status, reason: null };
+    if (action.startsWith(`${prefix}_`)) {
+      return { status, reason: action.slice(prefix.length + 1) };
+    }
+  }
+  return null;
+}
+
 function formatAction(action: string): string {
-  if (action.startsWith("status_changed_to_")) {
-    return `Status changed to "${action.replace("status_changed_to_", "")}"`;
+  const statusChange = parseStatusChange(action);
+  if (statusChange) {
+    return `Status changed to "${statusChange.status}"`;
   }
   if (action.startsWith("field_approved:")) {
     return `Approved field "${action.split(":")[1]?.trim()}"`;
@@ -55,16 +74,11 @@ function formatAction(action: string): string {
   return known[action] ?? action;
 }
 
-// The backend doesn't expose a dedicated "reason" field on audit entries yet
-// (its StatusUpdate schema accepts one, but it's currently dropped before
-// being saved to the AuditLog — a backend bug, not a frontend gap). This
-// reads entry.reason if the backend starts sending it properly, and falls
-// back to parsing a "status_changed_to_rejected_<reason>" suffix as a
-// stop-gap in case the quick fix embeds it in the action string instead.
+// Prefers a real `reason` field if the backend ever adds one; otherwise
+// pulls it out of the action string via parseStatusChange.
 function getRejectionReason(entry: AuditLogEntry): string | null {
   if (entry.reason) return entry.reason;
-  const match = entry.action.match(/^status_changed_to_rejected_(.+)$/);
-  return match ? match[1] : null;
+  return parseStatusChange(entry.action)?.reason ?? null;
 }
 
 function formatTimestamp(iso: string) {
@@ -311,10 +325,11 @@ export default function AuditPage() {
         <div className="mt-5 overflow-hidden rounded-md border border-border">
           <table className="w-full table-fixed divide-y divide-border text-left text-sm">
             <colgroup>
-              <col className="w-[30%]" />
-              <col className="w-[18%]" />
-              <col className="w-[37%]" />
-              <col className="w-[15%]" />
+              <col className="w-[27%]" />
+              <col className="w-[16%]" />
+              <col className="w-[32%]" />
+              <col className="w-[13%]" />
+              <col className="w-[12%]" />
             </colgroup>
             <thead className="bg-muted text-muted-foreground">
               <tr>
@@ -322,16 +337,17 @@ export default function AuditPage() {
                 <th className="px-4 py-3 font-medium">When</th>
                 <th className="px-4 py-3 font-medium">Latest action</th>
                 <th className="px-4 py-3 font-medium">Who</th>
+                <th className="px-4 py-3 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border bg-card">
-              {loading && <LoadingRow colSpan={4} />}
+              {loading && <LoadingRow colSpan={5} />}
 
-              {!loading && error && <ErrorRow colSpan={4} message="Couldn't load audit entries." />}
+              {!loading && error && <ErrorRow colSpan={5} message="Couldn't load audit entries." />}
 
               {!loading && !error && groups.length === 0 && (
                 <EmptyRow
-                  colSpan={4}
+                  colSpan={5}
                   icon={ClipboardList}
                   message={
                     entries.length === 0
@@ -390,6 +406,16 @@ export default function AuditPage() {
                             {group.latest.actor}
                           </span>
                         </td>
+                        <td className="px-4 py-3 text-right">
+                          <a
+                            href={`/viewer?document=${group.documentId}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted/70"
+                          >
+                            <Eye className="h-3.5 w-3.5" />
+                            View
+                          </a>
+                        </td>
                       </tr>
 
                       {isExpanded &&
@@ -419,6 +445,7 @@ export default function AuditPage() {
                                   {entry.actor}
                                 </span>
                               </td>
+                              <td className="px-4 py-2" />
                             </tr>
                           );
                         })}
@@ -430,7 +457,8 @@ export default function AuditPage() {
         </div>
 
         <p className="mt-3 text-xs text-muted-foreground">
-          Showing the latest action per document — click a row to expand its full history. Entries are fetched per
+          Showing the latest action per document — click a row to expand its full history, or use{" "}
+          <span className="font-medium text-foreground">View</span> to open the document. Entries are fetched per
           document via <code>GET /documents/&#123;id&#125;/audit</code> and merged client-side.
         </p>
       </section>
