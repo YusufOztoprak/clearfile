@@ -1,12 +1,13 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, DateTime, ForeignKey, Float, Text
+from sqlalchemy import String, DateTime, ForeignKey, Float, Text, LargeBinary
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship, DeclarativeBase
 
 
 class Base(DeclarativeBase):
     pass
+
 
 class Document(Base):
     __tablename__ = "documents"
@@ -16,6 +17,8 @@ class Document(Base):
     status: Mapped[str] = mapped_column(String, default="pending")
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     signed_file_path: Mapped[str] = mapped_column(String, nullable=True)
+    file_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=True)
+    signed_file_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=True)
 
     extracted_fields: Mapped[list["ExtractedField"]] = relationship(back_populates="document", cascade="all, delete-orphan")
     audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="document", cascade="all, delete-orphan")
