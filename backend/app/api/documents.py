@@ -3,47 +3,33 @@ import shutil
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
-from sqlalchemy.orm import Session
+from fastapi.responses import Response
 from pydantic import BaseModel
-from openai import AsyncOpenAI
+from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models import Document, AuditLog, ExtractedField
 from nutrient_dws import NutrientClient
 from app.core.config import settings
-from fastapi.responses import FileResponse
-
-openai_client = AsyncOpenAI(api_key=settings.openai_api_key, timeout=10.0)
-
-
-async def generate_review_note(field_name: str, value: str, confidence: float) -> str:
-    prompt = (
-        f"An invoice field was extracted with low confidence.\n"
-        f"Field: {field_name}\nExtracted value: {value}\nConfidence: {confidence:.0%}\n\n"
-        f"In one short sentence, explain to a human reviewer what to double-check about this field."
-    )
-    try:
-        response = await openai_client.chat.completions.create(
-            model="gpt-5.4-mini",
-            messages=[{"role": "user", "content": prompt}],
-            max_completion_tokens=60,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"OpenAI call failed: {e}")
-        return "Low confidence extraction — please verify this value manually."
-
-
+from openai import AsyncOpenAI
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+SIGNED_DIR = Path("signed")
+SIGNED_DIR.mkdir(exist_ok=True)
+
+ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
 nutrient_client = NutrientClient(
     api_key=settings.nutrient_processor_api_key,
     extract_api_key=settings.nutrient_extraction_api_key,
 )
+
+openai_client = AsyncOpenAI(api_key=settings.openai_api_key, timeout=10.0)
 
 
 class StatusUpdate(BaseModel):
@@ -51,9 +37,13 @@ class StatusUpdate(BaseModel):
     reason: str | None = None
 
 
-ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+class FieldReviewUpdate(BaseModel):
+    approved: bool
 
+
+# ---------------------------------------------------------------------------
+# Upload
+# ---------------------------------------------------------------------------
 
 @router.post("/upload")
 def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -64,21 +54,21 @@ def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db))
     doc_id = uuid.uuid4()
     file_path = UPLOAD_DIR / f"{doc_id}_{file.filename}"
 
+    content = b""
     size = 0
-    with file_path.open("wb") as buffer:
-        while chunk := file.file.read(1024 * 1024):
-            size += len(chunk)
-            if size > MAX_FILE_SIZE:
-                buffer.close()
-                file_path.unlink(missing_ok=True)
-                raise HTTPException(status_code=400, detail="File too large (max 10MB)")
-            buffer.write(chunk)
+    while chunk := file.file.read(1024 * 1024):
+        size += len(chunk)
+        if size > MAX_FILE_SIZE:
+            raise HTTPException(status_code=400, detail="File too large (max 10MB)")
+        content += chunk
 
     if size == 0:
-        file_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
-    doc = Document(id=doc_id, filename=file.filename, status="pending")
+    with file_path.open("wb") as buffer:
+        buffer.write(content)
+
+    doc = Document(id=doc_id, filename=file.filename, status="pending", file_data=content)
     db.add(doc)
     db.flush()
 
@@ -90,6 +80,10 @@ def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db))
 
     return {"id": str(doc.id), "filename": doc.filename, "status": doc.status}
 
+
+# ---------------------------------------------------------------------------
+# List / Get
+# ---------------------------------------------------------------------------
 
 @router.get("")
 def list_documents(db: Session = Depends(get_db)):
@@ -126,12 +120,45 @@ def get_document(document_id: uuid.UUID, db: Session = Depends(get_db)):
         ],
     }
 
+
 @router.get("/{document_id}/status")
 def get_document_status(document_id: uuid.UUID, db: Session = Depends(get_db)):
     doc = db.query(Document).filter(Document.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     return {"id": str(doc.id), "status": doc.status}
+
+
+# ---------------------------------------------------------------------------
+# Status update
+# ---------------------------------------------------------------------------
+
+@router.patch("/{document_id}/status")
+def update_document_status(document_id: uuid.UUID, payload: StatusUpdate, db: Session = Depends(get_db)):
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    valid_statuses = {"pending", "processing", "needs_review", "signed", "rejected"}
+    if payload.status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+
+    doc.status = payload.status
+
+    action = f"status_changed_to_{payload.status}"
+    if payload.reason:
+        action += f": {payload.reason}"
+
+    db.add(AuditLog(id=uuid.uuid4(), document_id=doc.id, action=action, actor="system"))
+    db.commit()
+    db.refresh(doc)
+
+    return {"id": str(doc.id), "status": doc.status}
+
+
+# ---------------------------------------------------------------------------
+# Audit trail
+# ---------------------------------------------------------------------------
 
 @router.get("/{document_id}/audit")
 def get_document_audit(document_id: uuid.UUID, db: Session = Depends(get_db)):
@@ -149,66 +176,45 @@ def get_document_audit(document_id: uuid.UUID, db: Session = Depends(get_db)):
         ],
     }
 
+
+# ---------------------------------------------------------------------------
+# File retrieval (served from the database, not disk, for persistence
+# across deploys/restarts on platforms with an ephemeral filesystem)
+# ---------------------------------------------------------------------------
+
 @router.get("/{document_id}/file")
 def get_document_file(document_id: uuid.UUID, db: Session = Depends(get_db)):
     doc = db.query(Document).filter(Document.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+    if not doc.file_data:
+        raise HTTPException(status_code=404, detail="Original file not found in database")
 
-    file_path = next(UPLOAD_DIR.glob(f"{document_id}_*"), None)
-    if not file_path or not file_path.exists():
-        raise HTTPException(status_code=404, detail="Original file not found or does not exist")
-
-    return FileResponse(
-        path=file_path,
-        filename=doc.filename,
-        media_type="application/octet-stream"
+    return Response(
+        content=doc.file_data,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{doc.filename}"'},
     )
+
 
 @router.get("/{document_id}/signed-file")
-def get_signed_file(document_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_signed_document_file(document_id: uuid.UUID, db: Session = Depends(get_db)):
     doc = db.query(Document).filter(Document.id == document_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+    if not doc.signed_file_data:
+        raise HTTPException(status_code=404, detail="Document has not been signed yet")
 
-    if not doc.signed_file_path:
-        raise HTTPException(status_code=404, detail="Document has not been signed")
-
-    signed_path = Path(doc.signed_file_path)
-    if not signed_path.exists():
-        raise HTTPException(status_code=404, detail="Signed file not found on disk")
-
-    return FileResponse(
-        path=signed_path,
-        filename=f"{doc.filename}_signed.pdf",
-        media_type="application/pdf"
+    return Response(
+        content=doc.signed_file_data,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{doc.filename}_signed.pdf"'},
     )
 
-@router.patch("/{document_id}/status")
-def update_document_status(document_id: uuid.UUID, payload: StatusUpdate, db: Session = Depends(get_db)):
-    doc = db.query(Document).filter(Document.id == document_id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
 
-    valid_statuses = {"pending", "processing", "needs_review", "signed", "rejected"}
-    if payload.status not in valid_statuses:
-        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
-
-    doc.status = payload.status
-
-    action = f"status_changed_to_{payload.status}"
-    if payload.reason:
-        action += f"_{payload.reason}"
-
-    db.add(AuditLog(id=uuid.uuid4(), document_id=doc.id, action=action, actor="system"))
-    db.commit()
-    db.refresh(doc)
-
-    return {"id": str(doc.id), "status": doc.status}
-
-class FieldReviewUpdate(BaseModel):
-    approved: bool
-
+# ---------------------------------------------------------------------------
+# Field-level review
+# ---------------------------------------------------------------------------
 
 @router.patch("/{document_id}/fields/{field_id}")
 def update_field_review(
@@ -241,6 +247,29 @@ def update_field_review(
         "approved": field.approved,
     }
 
+
+# ---------------------------------------------------------------------------
+# Extraction
+# ---------------------------------------------------------------------------
+
+async def generate_review_note(field_name: str, value: str, confidence: float) -> str:
+    prompt = (
+        f"An invoice field was extracted with low confidence.\n"
+        f"Field: {field_name}\nExtracted value: {value}\nConfidence: {confidence:.0%}\n\n"
+        f"In one short sentence, explain to a human reviewer what to double-check about this field."
+    )
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-5.4-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_completion_tokens=60,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"OpenAI call failed: {e}")
+        return "Low confidence extraction — please verify this value manually."
+
+
 @router.post("/{document_id}/extract")
 async def extract_document(document_id: uuid.UUID, db: Session = Depends(get_db)):
     doc = db.query(Document).filter(Document.id == document_id).first()
@@ -248,8 +277,12 @@ async def extract_document(document_id: uuid.UUID, db: Session = Depends(get_db)
         raise HTTPException(status_code=404, detail="Document not found")
 
     file_path = next(UPLOAD_DIR.glob(f"{document_id}_*"), None)
-    if not file_path:
-        raise HTTPException(status_code=404, detail="File not found on disk")
+    if not file_path or not file_path.exists():
+        if not doc.file_data:
+            raise HTTPException(status_code=404, detail="File not found on disk or in database")
+        file_path = UPLOAD_DIR / f"{document_id}_{doc.filename}"
+        with file_path.open("wb") as f:
+            f.write(doc.file_data)
 
     try:
         response = await asyncio.wait_for(
@@ -321,9 +354,10 @@ async def extract_document(document_id: uuid.UUID, db: Session = Depends(get_db)
 
     return {"id": str(doc.id), "status": doc.status, "extracted_fields": saved_fields}
 
-SIGNED_DIR = Path("signed")
-SIGNED_DIR.mkdir(exist_ok=True)
 
+# ---------------------------------------------------------------------------
+# Signing
+# ---------------------------------------------------------------------------
 
 def build_invoice_html(doc: Document, fields: list[ExtractedField]) -> str:
     rows = "".join(
@@ -389,6 +423,7 @@ async def sign_document(document_id: uuid.UUID, db: Session = Depends(get_db)):
 
     doc.status = "signed"
     doc.signed_file_path = str(signed_path)
+    doc.signed_file_data = signed_bytes
     db.add(AuditLog(id=uuid.uuid4(), document_id=doc.id, action="signed", actor="system"))
     db.commit()
 
