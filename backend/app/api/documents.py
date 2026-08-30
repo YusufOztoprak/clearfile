@@ -373,6 +373,13 @@ def build_invoice_html(doc: Document, fields: list[ExtractedField]) -> str:
           <tr><th>Field</th><th>Value</th></tr>
           {rows}
         </table>
+        <div style="margin-top: 40px; padding: 15px; border: 2px solid #16a34a; display: inline-block;">
+          <p style="color: #16a34a; font-weight: bold; margin: 0;">✓ Digitally Signed &amp; Verified</p>
+          <p style="font-size: 12px; color: #666; margin: 5px 0 0 0;">
+            This document has been cryptographically signed via Nutrient DWS.
+            Signature integrity can be verified in any PDF reader.
+          </p>
+        </div>
       </body>
     </html>
     """
