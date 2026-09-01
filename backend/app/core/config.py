@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -6,10 +6,10 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     nutrient_processor_api_key: str = ""
     nutrient_extraction_api_key: str = ""
+    next_public_nutrient_license_key: str = ""
     confidence_threshold: float = 0.85
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
 settings = Settings()

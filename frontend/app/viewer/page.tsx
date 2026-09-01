@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import PdfViewer from "@/components/PdfViewer";
@@ -12,7 +12,12 @@ type DocumentStatus = "pending" | "processing" | "needs_review" | "signed" | "re
 // Route: /viewer?document=<id>
 // Kept as its own page (not a modal) so it has a shareable URL and doesn't
 // fight with Review's own state — Review/Archive/Dashboard/Audit just link here.
-export default function ViewerPage() {
+//
+// useSearchParams() requires a Suspense boundary above it, otherwise
+// `next build` fails while prerendering this page (it did — see the
+// "Error occurred prerendering page /viewer" build log). The actual page
+// logic lives in ViewerContent below; ViewerPage just wraps it.
+function ViewerContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const documentId = searchParams.get("document");
@@ -118,5 +123,19 @@ export default function ViewerPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function ViewerPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-screen items-center justify-center text-muted-foreground">
+          <Loader2 className="h-5 w-5 animate-spin" />
+        </div>
+      }
+    >
+      <ViewerContent />
+    </Suspense>
   );
 }
